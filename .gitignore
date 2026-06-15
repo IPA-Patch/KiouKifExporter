@@ -477,3 +477,10 @@ logs/
 assets/dump.cs
 assets/dump.cs.index.json
 # *.ipa already ignored globally above.
+
+# Claude Code per-operator settings. Each developer's settings.local.json
+# captures their own tool allowlist + bypass mode; checking it in either
+# clobbers a teammate's settings or, more often, makes them prompt-deny
+# on actions the original author had pre-approved. settings.json (the
+# shared profile, no `.local.`) stays tracked.
+.claude/settings.local.json
