@@ -1,6 +1,7 @@
 #import "Internal.h"
 
 #import <CommonCrypto/CommonDigest.h>
+#import <dlfcn.h>
 
 // ===========================================================================
 // Helpers.m — small utilities for the KIF export path.
@@ -42,18 +43,36 @@
 #define RVA_KIFWRITEOPTIONS_CTOR    0x5D53960  // void KIFWriteOptions..ctor(this)
 #define RVA_KIFWRITER_WRITE         0x5D53968  // static string KIFWriter.Write(RecordManager, KIFWriteOptions)
 
-// KIFWriteOptions instance size needed for the raw-buffer trick. The field
-// map (from dump.cs) is:
-//   0x00 il2cpp object header (klass + monitor, 16 bytes — we leave it zero)
-//   0x10 BlackPlayerName    : string
-//   0x18 WhitePlayerName    : string
-//   0x20 StartDateTime      : Nullable<DateTime> (16 bytes)
-//   0x30 MatchTitle         : string
-//   0x38 TimeRuleLabel      : string
-//   0x40 ThinkingTimesMicros: IReadOnlyList<long>
-//   0x48 EndingLabel        : string
-// Last field ends at 0x50. We pad to 0x60 for a little headroom.
+// KIFWriteOptions instance size needed for the raw-buffer trick. See the
+// KIFOPTS_OFF_* constants in Internal.h for the field map. Last field
+// (EndingLabel) sits at 0x48, ends at 0x50; we pad to 0x60 for headroom.
 #define KIFWRITEOPTIONS_SIZE        0x60
+
+// Project.ShogiCore.GameController -> private WinReason <Reason>k__BackingField at +0x30
+// (dump.cs L1484318). The enum is a 4-byte int.
+#define GC_OFF_WIN_REASON           0x30
+
+// Project.Game.Logic.MatchConfig field offsets (dump.cs L1418061+).
+#define MC_OFF_BLACK_PLAYER         0x18  // PlayerInfo*
+#define MC_OFF_WHITE_PLAYER         0x20  // PlayerInfo*
+#define MC_OFF_TIME_CONTROL         0x28  // TimeControlConfig*
+
+// Project.Game.Logic.PlayerInfo -> Name at +0x18 (dump.cs L1419145+).
+#define PI_OFF_NAME                 0x18
+
+// Project.Game.Logic.TimeControlConfig (dump.cs L1419538+).
+#define TC_OFF_TIME_SECONDS         0x10  // float
+#define TC_OFF_BYOYOMI              0x14  // float
+#define TC_OFF_INCREMENT            0x18  // float
+
+// System.DateTime kind flag (see DaTeTime struct in dump.cs L37391+).
+//   _dateData = ticks | (kind << 62)
+//   kind == 0b01 => Utc
+#define DOTNET_DATETIME_KIND_UTC    0x4000000000000000ULL
+// Ticks at 1970-01-01 00:00:00 UTC (UnixEpochTicks).
+#define DOTNET_DATETIME_UNIX_EPOCH_TICKS 621355968000000000LL
+// 1 second = 10,000,000 ticks.
+#define DOTNET_DATETIME_TICKS_PER_SECOND 10000000LL
 
 // GameController -> List<Position> _positionHistory at +0x10.
 // List<T>        -> T[] _items at +0x10, int32 _size at +0x18.
@@ -104,16 +123,22 @@ static void resolveIl2cppFunctions(void) {
 // ---------------------------------------------------------------------------
 // kifTextFromGameController
 //
-// Run the full GetUSIText → ParseUSI → KIFWriteOptions..ctor → KIFWriter.Write
-// pipeline and return the resulting KIF 2.0 string. Returns nil on any
-// failure (NULL receiver, USI text empty, ParseUSI gave back NULL,
-// KIFWriter.Write threw, …).
+// Run the full GetUSIText → ParseUSI → KIFWriteOptions..ctor →
+// kif_fill_write_options → KIFWriter.Write pipeline and return the
+// resulting KIF 2.0 string. Returns nil on any failure (NULL receiver,
+// USI text empty, ParseUSI gave back NULL, KIFWriter.Write threw, …).
+//
+// `matchConfig` may be NULL — in that case player names and the time
+// rule label are simply left empty in the produced KIF (StartDateTime,
+// MatchTitle and EndingLabel still get filled).
 //
 // MethodInfo* trailing arg is NULL throughout — il2cpp tolerates this for
 // instance accessors and static methods in KIOU. Confirmed by Frida probe
 // (packages/frida/hook_kiou_kifwriter_probe.js).
 // ---------------------------------------------------------------------------
-NSString *kifTextFromGameController(void *gameCtrl) {
+NSString *kifTextFromGameController(void *gameCtrl,
+                                    void *matchConfig,
+                                    const char *matchModeTag) {
     resolveIl2cppFunctions();
     if (!g_GetUSIText || !g_ParseUSI || !g_KIFOpts_Ctor || !g_KIFWriter_Write) {
         return nil;
@@ -169,6 +194,11 @@ NSString *kifTextFromGameController(void *gameCtrl) {
                   @"[KIF] KIFWriteOptions.ctor threw: %@", e]);
         return nil;
     }
+
+    // Step 3.5: fill the user-visible KIFWriteOptions fields. Safe to call
+    // unconditionally — internal failures fall back to leaving the
+    // specific field unset, which matches the pre-Phase-3 behavior.
+    kif_fill_write_options(opts, matchConfig, gameCtrl, matchModeTag);
 
     // Step 4: KIFWriter.Write(record, opts) → KIF 2.0 string
     void *kifStrPtr = NULL;
@@ -276,6 +306,239 @@ NSString *kif_sanitize_filename_segment(NSString *s, NSUInteger maxChars) {
         return [out substringToIndex:maxChars];
     }
     return [out copy];
+}
+
+// ---------------------------------------------------------------------------
+// il2cpp_str_new
+//
+// dlsym the runtime's il2cpp_string_new export the first time we need it
+// and cache the function pointer. Returns NULL on:
+//   - dlsym failure (extremely unlikely — UnityFramework is loaded by the
+//     time Hook_MatchModeObserve.m runs, and il2cpp_string_new is a
+//     stable export)
+//   - utf8 == NULL or empty (KIFWriter.Write treats null fields as
+//     "not present" which is what we want anyway)
+//
+// The returned il2cpp string is owned by the il2cpp runtime; we don't
+// retain it past the synchronous KIFWriter.Write call.
+// ---------------------------------------------------------------------------
+typedef void *(*il2cpp_string_new_t)(const char *str);
+
+void *il2cpp_str_new(const char *utf8) {
+    if (!utf8 || !*utf8) return NULL;
+    static il2cpp_string_new_t fn = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        fn = (il2cpp_string_new_t)dlsym(RTLD_DEFAULT, "il2cpp_string_new");
+        if (!fn) {
+            file_log(@"[KIF] dlsym(il2cpp_string_new) returned NULL — "
+                     @"string KIFWriteOptions fields will be left empty");
+        }
+    });
+    if (!fn) return NULL;
+    void *result = NULL;
+    @try {
+        result = fn(utf8);
+    } @catch (NSException *e) {
+        file_log([NSString stringWithFormat:
+                  @"[KIF] il2cpp_string_new threw: %@", e]);
+        return NULL;
+    }
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// kif_winreason_label
+//
+// Translate WinReason enum value -> short Japanese label string suitable for
+// the KIF EndingLabel column. Mirrors the wording KIOU uses in its own KIF
+// summary text (GameController.GetKifuText: "詰み" / "千日手" / "持将棋" /
+// "入玉宣言"). For WinReason.None we return nil (= leave the field empty,
+// matches the in-app behavior when no terminal result is set).
+//
+// WinReason values (dump.cs L1484293):
+//   0 None            -> nil
+//   1 Checkmate       -> "詰み"
+//   2 PerpetualCheck  -> "連続王手の千日手"
+//   3 EnteringKing    -> "入玉宣言"
+//   4 Stalemate       -> "ステイルメイト"
+// ---------------------------------------------------------------------------
+static NSString *kif_winreason_label(int32_t reason) {
+    switch (reason) {
+        case 0: return nil;
+        case 1: return @"詰み";
+        case 2: return @"連続王手の千日手";
+        case 3: return @"入玉宣言";
+        case 4: return @"ステイルメイト";
+        default:
+            return [NSString stringWithFormat:@"WinReason(%d)", (int)reason];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// kif_build_time_rule_label
+//
+// Format TimeControlConfig fields as a short, KIF-friendly time rule label:
+//
+//   持時間 / 秒読み / フィッシャー の有無で書き分け
+//
+//   時間+秒読み のみ           : "10分 秒読み30秒"
+//   時間+フィッシャー (秒)     : "10分 フィッシャー5秒"
+//   時間+秒読み+フィッシャー   : "10分 秒読み30秒 フィッシャー5秒"
+//   秒読みのみ                  : "秒読み30秒"
+//   全部ゼロ (KIOU の "無制限") : "無制限"
+//
+// `tc` is a TimeControlConfig*; may be NULL — returns nil so caller skips
+// the assignment.
+// ---------------------------------------------------------------------------
+static NSString *kif_build_time_rule_label(void *tc) {
+    if (!ptrLooksValid(tc)) return nil;
+    // Read three floats. ARC doesn't help us here — these are raw memcpy's.
+    float timeSec = 0.0f, byoyomi = 0.0f, increment = 0.0f;
+    memcpy(&timeSec,   (char *)tc + TC_OFF_TIME_SECONDS, sizeof(float));
+    memcpy(&byoyomi,   (char *)tc + TC_OFF_BYOYOMI,      sizeof(float));
+    memcpy(&increment, (char *)tc + TC_OFF_INCREMENT,    sizeof(float));
+
+    if (timeSec <= 0.0f && byoyomi <= 0.0f && increment <= 0.0f) {
+        return @"無制限";
+    }
+    NSMutableString *out = [NSMutableString string];
+    if (timeSec > 0.0f) {
+        int minutes = (int)(timeSec / 60.0f);
+        int seconds = (int)timeSec - minutes * 60;
+        if (seconds > 0) {
+            [out appendFormat:@"%d分%d秒", minutes, seconds];
+        } else {
+            [out appendFormat:@"%d分", minutes];
+        }
+    }
+    if (byoyomi > 0.0f) {
+        if (out.length > 0) [out appendString:@" "];
+        [out appendFormat:@"秒読み%d秒", (int)byoyomi];
+    }
+    if (increment > 0.0f) {
+        if (out.length > 0) [out appendString:@" "];
+        [out appendFormat:@"フィッシャー%d秒", (int)increment];
+    }
+    return out.length > 0 ? [out copy] : nil;
+}
+
+// ---------------------------------------------------------------------------
+// kif_fill_write_options
+//
+// Write the five user-visible KIFWriteOptions fields directly into `opts`.
+// `opts` MUST be a buffer that g_KIFOpts_Ctor() has already run on.
+//
+// We deliberately use direct field stores (not the C# setters):
+//   * the buffer is not on the il2cpp managed heap (no klass header), so
+//     a GC barrier is meaningless against it
+//   * KIFWriter.Write reads exclusively through non-virtual auto-property
+//     getters that just load the backing field — verified by the Frida
+//     probe (packages/frida/hook_kiou_kifwriter_probe.js)
+//   * direct stores avoid the AAPCS dance for the 16-byte Nullable<DateTime>
+//     value-type setter (would be x1+x2 register pair)
+//
+// Field-by-field semantics:
+//   BlackPlayerName / WhitePlayerName  : borrowed il2cpp string from
+//       MatchConfig -> PlayerInfo -> Name. Skipped if matchConfig is NULL,
+//       or if Name is NULL/empty.
+//   StartDateTime  : Nullable<DateTime>(UnixEpoch + ticksFromWallClock),
+//       Kind=Utc. Always written.
+//   MatchTitle     : "{mode} @ {iso8601}" — synthesized via il2cpp_string_new.
+//   TimeRuleLabel  : kif_build_time_rule_label(tc) via il2cpp_string_new.
+//   EndingLabel    : kif_winreason_label(reason) via il2cpp_string_new.
+//
+// On any partial failure (dlsym(il2cpp_string_new) absent, MatchConfig
+// NULL, etc.) we leave that specific field alone and KIFWriter.Write
+// emits a blank slot for it — same as before this phase.
+// ---------------------------------------------------------------------------
+void kif_fill_write_options(void *opts,
+                            void *matchConfig,
+                            void *gameCtrl,
+                            const char *matchModeTag) {
+    if (!opts) return;
+
+    char *base = (char *)opts;
+
+    // ----- StartDateTime: always written (does not depend on matchConfig)
+    //
+    // Encode the current wall clock as .NET ticks since 0001-01-01 and OR
+    // in the UTC kind flag. Nullable<DateTime> layout is:
+    //   { bool hasValue @+0; uint8 pad[7]; ulong _dateData @+8; }
+    //   total 16 bytes.
+    NSTimeInterval epochSeconds = [[NSDate date] timeIntervalSince1970];
+    int64_t ticks =
+        DOTNET_DATETIME_UNIX_EPOCH_TICKS +
+        (int64_t)(epochSeconds * (double)DOTNET_DATETIME_TICKS_PER_SECOND);
+    uint64_t dateData =
+        ((uint64_t)ticks) | DOTNET_DATETIME_KIND_UTC;
+    char *sdt = base + KIFOPTS_OFF_START_DATETIME;
+    memset(sdt, 0, 16);             // clear padding
+    *(uint8_t *)(sdt + 0) = 1;      // hasValue = true
+    memcpy(sdt + 8, &dateData, sizeof(uint64_t));
+
+    // ----- BlackPlayerName / WhitePlayerName
+    //
+    // Borrow the il2cpp string pointer straight out of MatchConfig's
+    // PlayerInfo.Name backing field; same lifetime as MatchConfig itself,
+    // which the IMatchMode pins until OnMatchEnd returns.
+    if (ptrLooksValid(matchConfig)) {
+        void *black = readPtr(matchConfig, MC_OFF_BLACK_PLAYER);
+        if (ptrLooksValid(black)) {
+            void *nameStr = readPtr(black, PI_OFF_NAME);
+            if (ptrLooksValid(nameStr)) {
+                memcpy(base + KIFOPTS_OFF_BLACK_PLAYER_NAME,
+                       &nameStr, sizeof(void *));
+            }
+        }
+        void *white = readPtr(matchConfig, MC_OFF_WHITE_PLAYER);
+        if (ptrLooksValid(white)) {
+            void *nameStr = readPtr(white, PI_OFF_NAME);
+            if (ptrLooksValid(nameStr)) {
+                memcpy(base + KIFOPTS_OFF_WHITE_PLAYER_NAME,
+                       &nameStr, sizeof(void *));
+            }
+        }
+    }
+
+    // ----- MatchTitle: "{mode} @ {iso8601}" via il2cpp_string_new.
+    {
+        NSString *iso = kif_iso8601_basic_utc_now();
+        NSString *title = [NSString stringWithFormat:@"%s @ %@",
+                           matchModeTag ? matchModeTag : "unknown", iso];
+        void *titleStr =
+            il2cpp_str_new(title.UTF8String);
+        if (titleStr) {
+            memcpy(base + KIFOPTS_OFF_MATCH_TITLE,
+                   &titleStr, sizeof(void *));
+        }
+    }
+
+    // ----- TimeRuleLabel: format from MatchConfig.TimeControl (skip if no cfg).
+    if (ptrLooksValid(matchConfig)) {
+        void *tc = readPtr(matchConfig, MC_OFF_TIME_CONTROL);
+        NSString *label = kif_build_time_rule_label(tc);
+        if (label) {
+            void *labelStr = il2cpp_str_new(label.UTF8String);
+            if (labelStr) {
+                memcpy(base + KIFOPTS_OFF_TIME_RULE_LABEL,
+                       &labelStr, sizeof(void *));
+            }
+        }
+    }
+
+    // ----- EndingLabel: from GameController.<Reason>k__BackingField (WinReason).
+    if (ptrLooksValid(gameCtrl)) {
+        int32_t reason = readI32(gameCtrl, GC_OFF_WIN_REASON);
+        NSString *label = kif_winreason_label(reason);
+        if (label) {
+            void *labelStr = il2cpp_str_new(label.UTF8String);
+            if (labelStr) {
+                memcpy(base + KIFOPTS_OFF_ENDING_LABEL,
+                       &labelStr, sizeof(void *));
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

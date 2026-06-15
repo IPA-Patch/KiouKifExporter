@@ -21,9 +21,13 @@
 // ===========================================================================
 
 NSString *kif_writer_emit_for_match_end(void *gameCtrl,
+                                        void *matchConfig,
                                         const char *matchModeTag) {
-    // 1. Get the KIF text.
-    NSString *kif = kifTextFromGameController(gameCtrl);
+    // 1. Get the KIF text. matchConfig may be NULL — in that case player
+    //    names and time-rule label come out blank, which is acceptable.
+    NSString *kif = kifTextFromGameController(gameCtrl,
+                                              matchConfig,
+                                              matchModeTag);
     if (kif.length == 0) {
         file_log([NSString stringWithFormat:
                   @"[KIF] emit skipped: GetKifuText returned empty "
@@ -134,6 +138,16 @@ static void *hook_resolveGameController(void *self,
     return gameCtrl;
 }
 
+// OnlinePvPMode is the only concrete IMatchMode subclass that latches its
+// MatchConfig (`private MatchConfig _matchConfig` @ 0x38, dump.cs L1421567).
+// The other four modes receive cfg in InitializeAsync but throw it away.
+// In the Patched build we don't see the InitializeAsync arg, so for those
+// modes we pass NULL — player names and time-rule label come out blank
+// in the resulting KIF. That's a quality regression only for the Patched
+// build of AI/Local/CPUStream/RecordReplay; the Tweak (JB) build still
+// fills them via Hook_MatchModeObserve's `g_matchConfigCache`.
+#define ONLINEPVPMODE_OFF_MATCHCONFIG  0x38
+
 UniTaskRet hook_OnMatchEndAsync(void *self, void *ct,
                                 uint32_t mode_index) {
     (void)ct;
@@ -162,12 +176,23 @@ UniTaskRet hook_OnMatchEndAsync(void *self, void *ct,
         return (UniTaskRet){ NULL, NULL };
     }
 
+    // MatchConfig discovery: only OnlinePvPMode keeps cfg on `self`. For
+    // every other mode we'd be reading a sibling field at +0x38 (e.g.
+    // AIMatchMode at +0x38 is _currentThinkCts) — leave matchConfig NULL.
+    // As a courtesy let the Tweak side share its cache if it happens to
+    // be loaded (same A/B story as g_gameCtrlCache above).
+    void *matchConfig = NULL;
+    if (mode_index == KIOU_BINPATCH_MODE_ONLINEPVP && ptrLooksValid(self)) {
+        matchConfig = readPtr(self, ONLINEPVPMODE_OFF_MATCHCONFIG);
+    }
+    if (!matchConfig) matchConfig = g_matchConfigCache;
+
     file_log([NSString stringWithFormat:
               @"[BINPATCH] OnMatchEndAsync mode=%s self=%p ct=%p "
-              @"gameCtrl=%p — emitting KIF",
-              modeName, self, ct, gameCtrl]);
+              @"gameCtrl=%p matchConfig=%p — emitting KIF",
+              modeName, self, ct, gameCtrl, matchConfig]);
 
-    NSString *path = kif_writer_emit_for_match_end(gameCtrl, modeName);
+    NSString *path = kif_writer_emit_for_match_end(gameCtrl, matchConfig, modeName);
     if (path) {
         file_log([NSString stringWithFormat:
                   @"[BINPATCH] %s emitted -> %@", modeName, path]);
