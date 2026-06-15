@@ -25,7 +25,10 @@ env:
 jobs:
   release:
     name: build + release
-    runs-on: ubuntu-latest
+    # See integration.yaml: pinned to 22.04 because sbingner's iOS arm64e
+    # toolchain links against libtinfo.so.5 / libncurses5, which Ubuntu
+    # noble (24.04) no longer ships.
+    runs-on: ubuntu-22.04
     steps:
       - name: Resolve tag
         id: tag

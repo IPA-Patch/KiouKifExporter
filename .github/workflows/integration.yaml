@@ -24,7 +24,15 @@ env:
 jobs:
   build:
     name: build (${{ matrix.flavor }})
-    runs-on: ubuntu-latest
+    # ubuntu-22.04 still ships libtinfo5 / libncurses5 in apt, which
+    # Sam Bingner's iOS arm64e toolchain (the only Linux iOS cross
+    # toolchain in wide use) was linked against. Ubuntu 24.04 (noble)
+    # dropped those, so `ubuntu-latest` makes clang die with
+    # "libtinfo.so.5: cannot open shared object file" the moment it
+    # runs. Pin to 22.04 here; revisit only when sbingner ships a
+    # noble-compatible build, or when we move to a newer linux-arm64
+    # iOS toolchain that links against modern ncurses.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
