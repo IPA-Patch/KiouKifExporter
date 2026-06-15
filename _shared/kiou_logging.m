@@ -7,11 +7,18 @@
 // Three destinations on every file_log():
 //   * NSLog              — Console.app, always on
 //   * os_log             — unified logging, subsystem-scoped
-//   * g_logSandbox file  — NSTemporaryDirectory()/<tag>.log, append-only
+//   * g_logSandbox file  — append-only file inside the host app's sandbox
 //
-// `<tag>` is the short tag derived from the subsystem (last dot segment),
-// e.g. "kioukifexporter".log. Resolves under the host app's sandbox:
-//   /var/mobile/Containers/Data/Application/<UUID>/tmp/<tag>.log
+// File destination defaults to NSTemporaryDirectory()/<tag>.log, which
+// resolves to /var/mobile/Containers/Data/Application/<UUID>/tmp/<tag>.log.
+//
+// When KIOU_LOG_TO_DOCUMENTS=1 is defined at build time (used by the
+// `make binpatch` flavor of KiouKifExporter), the file destination is
+// moved to <sandbox>/Documents/<tag>.log instead. That directory is
+// exposed through Files.app once the host app's Info.plist carries
+// UIFileSharingEnabled+LSSupportsOpeningDocumentsInPlace, which is part
+// of the binpatch IPA pipeline. Non-jailbroken iOS 18 operators can then
+// SSH-less read the same log over the Files app.
 //
 // The sandbox file write is best-effort and silently swallows exceptions
 // so a flaky filesystem can't take down the host process.
@@ -64,6 +71,20 @@ void logging_init(const char *subsystem) {
     }
 
     NSString *filename = [g_tag stringByAppendingString:@".log"];
+#if defined(KIOU_LOG_TO_DOCUMENTS) && KIOU_LOG_TO_DOCUMENTS
+    // Files.app-exposed log path. Used by the iOS 18 binpatch build so
+    // operators on non-jailbroken devices can read the log without SSH.
+    NSArray<NSString *> *docs = NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES);
+    if (docs.count > 0) {
+        g_logSandbox = [docs[0] stringByAppendingPathComponent:filename];
+    } else {
+        // Fallback to tmp/ if NSDocumentDirectory resolves to nothing.
+        g_logSandbox = [NSTemporaryDirectory()
+                        stringByAppendingPathComponent:filename];
+    }
+#else
     g_logSandbox = [NSTemporaryDirectory()
                     stringByAppendingPathComponent:filename];
+#endif
 }
