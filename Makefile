@@ -9,14 +9,15 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = KiouKifExporter
 
 KiouKifExporter_FILES = $(shell find Sources/KiouKifExporter -name '*.m' -o -name '*.c' -o -name '*.mm' -o -name '*.cpp')
-# Shared logging implementation lives in ./_shared/. il2cpp / hook-engine
-# headers are inline-only so they don't need to be listed here.
-KiouKifExporter_FILES += _shared/kiou_logging.m
+# Shared logging implementation lives in the IPA-Patch/Common submodule
+# under Sources/Common/. il2cpp / hook-engine headers are inline-only so
+# they don't need to be listed here.
+KiouKifExporter_FILES += Sources/Common/logging.m
 
 # Build-time git short HEAD (7 chars). No -dirty suffix for now.
 KIOU_KIF_EXPORTER_COMMIT ?= $(shell git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)
 
-KiouKifExporter_CFLAGS = -fobjc-arc -Wno-unused-function -DKIOU_KIF_EXPORTER_COMMIT=\"$(KIOU_KIF_EXPORTER_COMMIT)\" -I_shared
+KiouKifExporter_CFLAGS = -fobjc-arc -Wno-unused-function -DKIOU_KIF_EXPORTER_COMMIT=\"$(KIOU_KIF_EXPORTER_COMMIT)\" -ISources/Common
 KiouKifExporter_FRAMEWORKS = Foundation
 
 # ---------------------------------------------------------------------------
@@ -30,8 +31,8 @@ KiouKifExporter_FRAMEWORKS = Foundation
 #                            vendor tree so we don't duplicate the .a.
 #
 # vendor/dobby ships in-tree (vendored, not a symlink) so the repo is
-# self-contained. _shared/kiou_hookengine.h picks between MSHookFunction
-# and DobbyHook at compile time.
+# self-contained. Sources/Common/hookengine.h picks between MSHookFunction
+# and DobbyHook at compile time, driven by -DIPA_JAILED=1.
 # ---------------------------------------------------------------------------
 # Phase 1.5 binary-patch distribution implies the jailed link shape:
 # the dylib gets injected via LC_LOAD_DYLIB into a statically-patched
@@ -43,16 +44,16 @@ KiouKifExporter_FRAMEWORKS = Foundation
 # and the dylib has zero external hook-engine dependency.
 ifeq ($(BINPATCH),1)
     JAILED := 1
-    KiouKifExporter_CFLAGS  += -DKIOU_BINPATCH=1
+    KiouKifExporter_CFLAGS  += -DIPA_BINPATCH=1
     # On iOS 18 / non-jailbreak the sandbox tmp/ is invisible from the
     # host's perspective (no SSH, no Filza). Push the file log into
     # Documents/ instead so operators can read it through Files.app once
     # the patched bundle has UIFileSharingEnabled set.
-    KiouKifExporter_CFLAGS  += -DKIOU_LOG_TO_DOCUMENTS=1
+    KiouKifExporter_CFLAGS  += -DIPA_LOG_TO_DOCUMENTS=1
 endif
 
 ifeq ($(JAILED),1)
-    KiouKifExporter_CFLAGS  += -DKIOU_JAILED=1 -Ivendor/dobby/include
+    KiouKifExporter_CFLAGS  += -DIPA_JAILED=1 -Ivendor/dobby/include
     KiouKifExporter_LDFLAGS  = -Lvendor/dobby/lib -ldobby -lc++ -lc++abi
 else
     KiouKifExporter_LDFLAGS  = -lsubstrate
@@ -78,7 +79,7 @@ jailed::
 	  || echo "(otool unavailable on host; inspect the dylib on a Mac/iOS device)"
 
 # binpatch distribution: same link shape as `jailed::` (Dobby statically
-# linked, no libsubstrate) but with -DKIOU_BINPATCH=1 so the constructor
+# linked, no libsubstrate) but with -DIPA_BINPATCH=1 so the constructor
 # publishes the hook pointer into UnityFramework's reserved __DATA slot
 # instead of trying to MSHookFunction/DobbyHook into __TEXT. This is the
 # only build mode that survives iOS 18's Code Signing Monitor. Drops the
