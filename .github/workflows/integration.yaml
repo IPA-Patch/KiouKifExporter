@@ -73,7 +73,11 @@ jobs:
         with:
           path: |
             theos
-          key: theos-linux-${{ env.IOS_SDK_VERSION }}-v1
+          # Bumped to v2: v1 cached a broken layout where the toolchain
+          # archive was extracted as $THEOS/toolchain/ios-arm64e-clang-toolchain/
+          # but Theos's makefiles search $THEOS/toolchain/linux/iphone/bin/clang.
+          # The new install step renames it; bumping the key forces a refresh.
+          key: theos-linux-${{ env.IOS_SDK_VERSION }}-v2
 
       - name: Install Theos
         if: steps.theos-cache.outputs.cache-hit != 'true'
@@ -82,12 +86,18 @@ jobs:
           # already handles toolchain + SDK download.
           git clone --recursive https://github.com/theos/theos.git "$THEOS"
 
-          # Linux toolchain (Sam Bingner's iOS arm64 cross toolchain).
-          mkdir -p "$THEOS/toolchain"
-          curl -L -o /tmp/toolchain.tar.xz \
+          # Linux toolchain — Sam Bingner's iOS arm64e cross toolchain.
+          # The archive's top-level is `ios-arm64e-clang-toolchain/`, but
+          # Theos's makefiles look for the compiler at
+          # $THEOS/toolchain/linux/iphone/bin/clang (linux/iphone is the
+          # canonical layout for the Linux host). Rename the extracted
+          # directory so the search hits.
+          mkdir -p "$THEOS/toolchain/linux"
+          curl -L -o /tmp/toolchain.tar.lzma \
               "https://github.com/sbingner/llvm-project/releases/download/v10.0.0-1/linux-ios-arm64e-clang-toolchain.tar.lzma"
-          tar -xf /tmp/toolchain.tar.xz -C "$THEOS/toolchain"
-          mv "$THEOS/toolchain/linux" "$THEOS/toolchain/linux2" || true
+          tar -xf /tmp/toolchain.tar.lzma -C "$THEOS/toolchain"
+          mv "$THEOS/toolchain/ios-arm64e-clang-toolchain" \
+             "$THEOS/toolchain/linux/iphone"
 
           # iOS SDK matching IOS_SDK_VERSION.
           mkdir -p "$THEOS/sdks"
@@ -98,10 +108,13 @@ jobs:
                 "$THEOS/sdks/"
 
       - name: Verify Theos
+        # Validate every path the Theos build actually uses, so a broken
+        # toolchain layout fails here (with a clear error) instead of as
+        # an opaque "clang: No such file or directory" during compile.
         run: |
-          ls "$THEOS"
-          ls "$THEOS/sdks"
           test -d "$THEOS/sdks/iPhoneOS${IOS_SDK_VERSION}.sdk"
+          test -x "$THEOS/toolchain/linux/iphone/bin/clang"
+          "$THEOS/toolchain/linux/iphone/bin/clang" --version
 
       - name: Build (${{ matrix.flavor }})
         run: |

@@ -73,18 +73,24 @@ jobs:
         with:
           path: |
             theos
-          key: theos-linux-${{ env.IOS_SDK_VERSION }}-v1
+          # See integration.yaml — bumped to v2 to invalidate the broken
+          # v1 layout (toolchain extracted at the wrong path).
+          key: theos-linux-${{ env.IOS_SDK_VERSION }}-v2
 
       - name: Install Theos
         if: steps.theos-cache.outputs.cache-hit != 'true'
         run: |
           git clone --recursive https://github.com/theos/theos.git "$THEOS"
 
-          mkdir -p "$THEOS/toolchain"
-          curl -L -o /tmp/toolchain.tar.xz \
+          # Linux toolchain — see integration.yaml for the full comment.
+          # Archive's top-level is `ios-arm64e-clang-toolchain/`, but Theos
+          # expects $THEOS/toolchain/linux/iphone/bin/clang.
+          mkdir -p "$THEOS/toolchain/linux"
+          curl -L -o /tmp/toolchain.tar.lzma \
               "https://github.com/sbingner/llvm-project/releases/download/v10.0.0-1/linux-ios-arm64e-clang-toolchain.tar.lzma"
-          tar -xf /tmp/toolchain.tar.xz -C "$THEOS/toolchain"
-          mv "$THEOS/toolchain/linux" "$THEOS/toolchain/linux2" || true
+          tar -xf /tmp/toolchain.tar.lzma -C "$THEOS/toolchain"
+          mv "$THEOS/toolchain/ios-arm64e-clang-toolchain" \
+             "$THEOS/toolchain/linux/iphone"
 
           mkdir -p "$THEOS/sdks"
           curl -L -o /tmp/sdk.tar.xz \
@@ -92,6 +98,12 @@ jobs:
           tar -xf /tmp/sdk.tar.xz -C /tmp
           cp -R "/tmp/sdks-master/iPhoneOS${IOS_SDK_VERSION}.sdk" \
                 "$THEOS/sdks/"
+
+      - name: Verify Theos
+        run: |
+          test -d "$THEOS/sdks/iPhoneOS${IOS_SDK_VERSION}.sdk"
+          test -x "$THEOS/toolchain/linux/iphone/bin/clang"
+          "$THEOS/toolchain/linux/iphone/bin/clang" --version
 
       - name: Build rootless .deb (MobileSubstrate)
         run: |
