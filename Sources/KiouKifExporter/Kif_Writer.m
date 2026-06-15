@@ -87,7 +87,7 @@ NSString *kif_writer_emit_for_match_end(void *gameCtrl,
 //   * our return value is dead — the cave overwrites x0/x1 with the
 //     original method's result a few instructions later
 //
-// Always exported (not behind #ifdef KIOU_BINPATCH) so that the substrate
+// Always exported (not behind #ifdef IPA_BINPATCH) so that the substrate
 // / jailed builds keep a single, stable symbol table. The function is
 // trivially cheap when never reached.
 // ===========================================================================

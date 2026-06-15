@@ -4,9 +4,9 @@
 #import <stdint.h>
 #import <stdbool.h>
 
-#import "kiou_il2cpp.h"
-#import "kiou_hookengine.h"
-#import "kiou_logging.h"
+#import "il2cpp.h"
+#import "hookengine.h"
+#import "logging.h"
 
 // ===========================================================================
 // Internal.h — KiouKifExporter-private declarations.

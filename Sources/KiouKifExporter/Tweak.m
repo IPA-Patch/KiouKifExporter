@@ -22,9 +22,9 @@ static BOOL g_unityHooked = NO;
 // re-walking dyld.
 uintptr_t g_unityBase = 0;
 
-#ifdef KIOU_BINPATCH
+#ifdef IPA_BINPATCH
 // ---------------------------------------------------------------------------
-// publish_binpatch_hook — KIOU_BINPATCH=1 entry-publication helper.
+// publish_binpatch_hook — IPA_BINPATCH=1 entry-publication helper.
 //
 // In binpatch mode we don't install any runtime hooks (Dobby / MSHook are
 // fatal under iOS 18's Code Signing Monitor — see
@@ -85,11 +85,11 @@ static void installUnityHooks(void) {
     file_log([NSString stringWithFormat:
               @"output dir = %@", outDir ?: @"(failed)"]);
 
-#ifndef KIOU_BINPATCH
+#ifndef IPA_BINPATCH
     // Runtime-hook install path (Phase 1 / jailbroken builds). Uses
     // MSHookFunction or Dobby under the hood — both rely on mprotect +
     // memcpy into __TEXT, which iOS 18 CSM kills on contact. That's
-    // exactly why the KIOU_BINPATCH path below exists.
+    // exactly why the IPA_BINPATCH path below exists.
     install_MatchModeObserve_hook(unityBase);
 #else
     // iOS 18 binpatch path: UnityFramework's prologues are already
