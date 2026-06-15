@@ -119,7 +119,7 @@ desktop and iOS viewer that reads `.kif` honors these rows.
 The one slot still intentionally NULL is **per-move consumption times**
 (`KIFWriteOptions.ThinkingTimesMicros`). The KIF body is still valid
 without it; only the `(M:SS/HH:MM:SS)` annotation is absent. This is
-queued for v0.3 — see [Roadmap](#roadmap).
+queued for v0.4 — see [Roadmap](#roadmap).
 
 Full implementation map — including each setter RVA, the field offsets,
 and the il2cpp string / List bridging plan — lives in
@@ -147,7 +147,8 @@ flowchart TD
     parse --> record(["RecordManager*"])
 
     record --> kifwrite["KIFWriter.Write(record, opts)"]
-    opts(["KIFWriteOptions* &middot; 0x60 raw NSMutableData<br/>+ .ctor() &mdash; all fields null"]) --> kifwrite
+    opts(["KIFWriteOptions* &middot; 0x60 NSMutableData"]) --> fill["kif_fill_write_options"]
+    fill --> kifwrite
 
     kifwrite --> kif(["KIF 2.0 string"])
 
