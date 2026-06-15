@@ -103,7 +103,7 @@ binpatch::
 #
 # This target NEVER redistributes a clean KIOU IPA — supply your own.
 KIOU_CLEAN_IPA ?= /home/vscode/app/assets/Kiou-1.0.1.ipa
-KIOU_IPA_RECIPE    := kioukifexporter
+KIOU_IPA_RECIPE    := recipes.kioukifexporter
 KIOU_IPA_FRAMEWORK := UnityFramework
 KIOU_IPA_DYLIB     := $(PWD)/packages/binpatch/KiouKifExporter.dylib
 
@@ -114,7 +114,7 @@ ipa:: binpatch
 	  echo "       override with: make ipa KIOU_CLEAN_IPA=/path/to/clean.ipa"; \
 	  exit 1; \
 	fi
-	@./tools/build_patched_ipa.sh \
+	@./shared/tools/build_patched_ipa.sh \
 	  --recipe    "$(KIOU_IPA_RECIPE)" \
 	  --framework "$(KIOU_IPA_FRAMEWORK)" \
 	  --dylib     "$(KIOU_IPA_DYLIB)" \
