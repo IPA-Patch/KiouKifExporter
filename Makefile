@@ -9,10 +9,17 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = KiouKifExporter
 
 KiouKifExporter_FILES = $(shell find Sources/KiouKifExporter -name '*.m' -o -name '*.c' -o -name '*.mm' -o -name '*.cpp')
-# Shared logging implementation lives in the IPA-Patch/Common submodule
-# under Sources/Common/. il2cpp / hook-engine headers are inline-only so
-# they don't need to be listed here.
+# Shared logging + binpatch implementations live in the IPA-Patch/Common
+# submodule under Sources/Common/. il2cpp / hook-engine headers are
+# inline-only so they don't need to be listed here.
 KiouKifExporter_FILES += Sources/Common/logging.m
+# binpatch.m provides ipa_binpatch_find_image (used by Tweak.m on every
+# build) and ipa_binpatch_resolve_orig (linked in but never called in
+# the current KifExporter design — the cave chains back to the original
+# itself, no orig_*() trampoline needed). Cheap, no runtime overhead
+# when unused, and future hook additions get the trampoline plumbing
+# for free.
+KiouKifExporter_FILES += Sources/Common/binpatch.m
 
 # Build-time git short HEAD (7 chars). No -dirty suffix for now.
 KIOU_KIF_EXPORTER_COMMIT ?= $(shell git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)
