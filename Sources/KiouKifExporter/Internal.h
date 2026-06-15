@@ -36,7 +36,7 @@
 // ---------------------------------------------------------------------------
 // KIOU_HOOK_SLOT_RVA — RVA (relative to UnityFramework's mach_header) of the
 // 8-byte slot in __DATA,__bss that patch_unity.py reserves for us. Our
-// constructor writes &kif_binpatch_OnMatchEndAsync into this slot. The cave
+// constructor writes &hook_OnMatchEndAsync into this slot. The cave
 // emitted by patch_unity.py loads the slot and BLR's whatever pointer is
 // there.
 //
@@ -172,7 +172,12 @@ typedef struct { void *r0; void *r1; } UniTaskRet;
 NSString *kif_writer_emit_for_match_end(void *gameCtrl, const char *matchModeTag);
 
 // ---------------------------------------------------------------------------
-// kif_binpatch_OnMatchEndAsync — binpatch-mode entry point.
+// hook_OnMatchEndAsync — the Patched-build entry point for OnMatchEndAsync.
+//
+// Mirrors the Tweak build's `hook_xxx_End` family (Hook_MatchModeObserve.m),
+// except that under the Patched build all five concrete IMatchMode subclasses
+// funnel through this one symbol — the cave passes `mode_index` so we can
+// still discriminate.
 //
 // Phase 1.5 ships UnityFramework pre-patched: each IMatchMode's
 // OnMatchEndAsync prologue is rewritten with `B <cave>`, and the cave (a
@@ -196,8 +201,8 @@ NSString *kif_writer_emit_for_match_end(void *gameCtrl, const char *matchModeTag
 // Declared `extern` so the constructor in Tweak.m can take its address
 // without a forward-declared static.
 // ---------------------------------------------------------------------------
-extern UniTaskRet kif_binpatch_OnMatchEndAsync(void *self, void *ct,
-                                               uint32_t mode_index);
+extern UniTaskRet hook_OnMatchEndAsync(void *self, void *ct,
+                                       uint32_t mode_index);
 
 // ---------------------------------------------------------------------------
 // Helpers.m — small utilities shared across files.

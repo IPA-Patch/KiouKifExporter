@@ -41,12 +41,12 @@ static void publish_binpatch_hook(uintptr_t unityBase) {
     g_unityBase = unityBase;
 
     void **slot = (void **)(unityBase + (uintptr_t)KIOU_HOOK_SLOT_RVA);
-    *slot = (void *)&kif_binpatch_OnMatchEndAsync;
+    *slot = (void *)&hook_OnMatchEndAsync;
 
     file_log([NSString stringWithFormat:
-              @"[BINPATCH] published &kif_binpatch_OnMatchEndAsync=%p "
+              @"[BINPATCH] published &hook_OnMatchEndAsync=%p "
               @"-> slot=%p (unityBase=0x%lx + rva=0x%lx)",
-              (void *)&kif_binpatch_OnMatchEndAsync, (void *)slot,
+              (void *)&hook_OnMatchEndAsync, (void *)slot,
               (unsigned long)unityBase,
               (unsigned long)KIOU_HOOK_SLOT_RVA]);
 }

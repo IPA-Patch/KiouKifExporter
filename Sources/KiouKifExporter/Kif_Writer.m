@@ -71,7 +71,12 @@ NSString *kif_writer_emit_for_match_end(void *gameCtrl,
 }
 
 // ===========================================================================
-// kif_binpatch_OnMatchEndAsync — Phase 1.5 binpatch entry point.
+// hook_OnMatchEndAsync — the Patched-build entry point for OnMatchEndAsync.
+//
+// Mirrors the Tweak build's `hook_xxx_End` family (Hook_MatchModeObserve.m),
+// except that under the Patched build all five concrete IMatchMode subclasses
+// funnel through this one symbol — the cave passes `mode_index` so we can
+// still discriminate.
 //
 // Called from the cave that patch_unity.py emits into UnityFramework. The
 // cave loads our address from the __DATA slot (KIOU_HOOK_SLOT_RVA) and
@@ -96,8 +101,8 @@ NSString *kif_writer_emit_for_match_end(void *gameCtrl,
 //
 // Logs the chain (self / adapter / gameCtrl / positionHistory) on failure
 // so the BINPATCH log shows exactly where the walk gave up.
-static void *kif_binpatch_resolveGameController(void *self,
-                                                uint32_t mode_index) {
+static void *hook_resolveGameController(void *self,
+                                        uint32_t mode_index) {
     if (mode_index >= KIOU_BINPATCH_MODE_COUNT) {
         file_log([NSString stringWithFormat:
                   @"[BINPATCH] mode_index=%u out of range (count=%d)",
@@ -129,8 +134,8 @@ static void *kif_binpatch_resolveGameController(void *self,
     return gameCtrl;
 }
 
-UniTaskRet kif_binpatch_OnMatchEndAsync(void *self, void *ct,
-                                        uint32_t mode_index) {
+UniTaskRet hook_OnMatchEndAsync(void *self, void *ct,
+                                uint32_t mode_index) {
     (void)ct;
 
     // mode_index is the cave-injected MOVZ X2,#imm that picks one of
@@ -140,7 +145,7 @@ UniTaskRet kif_binpatch_OnMatchEndAsync(void *self, void *ct,
         ? kKiouBinpatchModeNames[mode_index]
         : "Unknown";
 
-    void *gameCtrl = kif_binpatch_resolveGameController(self, mode_index);
+    void *gameCtrl = hook_resolveGameController(self, mode_index);
 
     // Fallback: only useful when both the jailed runtime-hook build and
     // the binpatch build happen to be loaded into the same process for an
