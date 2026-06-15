@@ -22,11 +22,14 @@
 
 NSString *kif_writer_emit_for_match_end(void *gameCtrl,
                                         void *matchConfig,
+                                        void *stateStore,
                                         const char *matchModeTag) {
-    // 1. Get the KIF text. matchConfig may be NULL — in that case player
-    //    names and time-rule label come out blank, which is acceptable.
+    // 1. Get the KIF text. matchConfig / stateStore may be NULL — in
+    //    that case player names and time-rule label come out blank,
+    //    which is acceptable.
     NSString *kif = kifTextFromGameController(gameCtrl,
                                               matchConfig,
+                                              stateStore,
                                               matchModeTag);
     if (kif.length == 0) {
         file_log([NSString stringWithFormat:
@@ -138,15 +141,22 @@ static void *hook_resolveGameController(void *self,
     return gameCtrl;
 }
 
-// OnlinePvPMode is the only concrete IMatchMode subclass that latches its
-// MatchConfig (`private MatchConfig _matchConfig` @ 0x38, dump.cs L1421567).
-// The other four modes receive cfg in InitializeAsync but throw it away.
-// In the Patched build we don't see the InitializeAsync arg, so for those
-// modes we pass NULL — player names and time-rule label come out blank
-// in the resulting KIF. That's a quality regression only for the Patched
-// build of AI/Local/CPUStream/RecordReplay; the Tweak (JB) build still
-// fills them via Hook_MatchModeObserve's `g_matchConfigCache`.
-#define ONLINEPVPMODE_OFF_MATCHCONFIG  0x38
+// OnlinePvPMode field offsets (dump.cs L1421556+):
+//   _stateStore   @ 0x28  (GameStateStore*) — where the real friend-match
+//                                            player names eventually land
+//   _matchConfig  @ 0x38  (MatchConfig*)    — locked-in initial values;
+//                                            BlackPlayer / WhitePlayer
+//                                            stay at "プレイヤー" for
+//                                            the whole match
+//
+// On the other four IMatchMode subclasses _matchConfig is NOT a field —
+// they get cfg through InitializeAsync and throw it away — and
+// _stateStore lives at a different per-mode offset. For now we only
+// recover both for OnlinePvPMode (the mode where placeholders matter);
+// the rest pass NULL and fall back to the Tweak-side caches (which is
+// what matters during A/B development on a JB device anyway).
+#define ONLINEPVPMODE_OFF_STATE_STORE_PATCHED  0x28
+#define ONLINEPVPMODE_OFF_MATCHCONFIG          0x38
 
 UniTaskRet hook_OnMatchEndAsync(void *self, void *ct,
                                 uint32_t mode_index) {
@@ -176,23 +186,27 @@ UniTaskRet hook_OnMatchEndAsync(void *self, void *ct,
         return (UniTaskRet){ NULL, NULL };
     }
 
-    // MatchConfig discovery: only OnlinePvPMode keeps cfg on `self`. For
-    // every other mode we'd be reading a sibling field at +0x38 (e.g.
-    // AIMatchMode at +0x38 is _currentThinkCts) — leave matchConfig NULL.
-    // As a courtesy let the Tweak side share its cache if it happens to
-    // be loaded (same A/B story as g_gameCtrlCache above).
+    // MatchConfig / GameStateStore discovery: only OnlinePvPMode keeps
+    // either as a field on `self`. For every other mode we'd be reading
+    // sibling fields at +0x28 / +0x38 — leave them NULL. As a courtesy
+    // let the Tweak side share its caches if both builds happen to be
+    // loaded (same A/B story as g_gameCtrlCache above).
     void *matchConfig = NULL;
+    void *stateStore = NULL;
     if (mode_index == KIOU_BINPATCH_MODE_ONLINEPVP && ptrLooksValid(self)) {
         matchConfig = readPtr(self, ONLINEPVPMODE_OFF_MATCHCONFIG);
+        stateStore  = readPtr(self, ONLINEPVPMODE_OFF_STATE_STORE_PATCHED);
     }
     if (!matchConfig) matchConfig = g_matchConfigCache;
+    if (!stateStore)  stateStore  = g_stateStoreCache;
 
     file_log([NSString stringWithFormat:
               @"[BINPATCH] OnMatchEndAsync mode=%s self=%p ct=%p "
-              @"gameCtrl=%p matchConfig=%p — emitting KIF",
-              modeName, self, ct, gameCtrl, matchConfig]);
+              @"gameCtrl=%p matchConfig=%p stateStore=%p — emitting KIF",
+              modeName, self, ct, gameCtrl, matchConfig, stateStore]);
 
-    NSString *path = kif_writer_emit_for_match_end(gameCtrl, matchConfig, modeName);
+    NSString *path = kif_writer_emit_for_match_end(gameCtrl, matchConfig,
+                                                    stateStore, modeName);
     if (path) {
         file_log([NSString stringWithFormat:
                   @"[BINPATCH] %s emitted -> %@", modeName, path]);
