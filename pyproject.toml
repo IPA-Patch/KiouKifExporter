@@ -1,7 +1,7 @@
 [project]
 name = "kioukifexporter-tools"
 version = "0.1.0"
-description = "Static binary-patch tooling for KiouKifExporter (UnityFramework Mach-O patcher, Info.plist patcher, LC_LOAD_DYLIB verifier)."
+description = "KiouKifExporter recipe driving the IPA-Patch/Shared static-patch toolchain."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -15,6 +15,14 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-# tools/ is the package root for unit tests (tools.encode etc.).
-pythonpath = ["."]
+# shared/ hosts the IPA-Patch/Shared submodule whose tools/ package is
+# imported as `tools.encode`, `tools.machoops`, etc. recipes/ lives at
+# the repo root so its modules import as `recipes.kioukifexporter`.
+# Tests for the toolchain itself live in shared/tests/; this repo only
+# runs them via the submodule (`make -C shared test`).
+pythonpath = [".", "shared"]
+
+[tool.ruff]
+# shared/ is a submodule; do not lint it here. Its CI runs ruff on its
+# own checkout.
+extend-exclude = ["shared"]
