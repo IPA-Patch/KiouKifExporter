@@ -1,0 +1,9 @@
+Package: work.tkgstrator.kioukifexporter
+Name: KiouKifExporter
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: KIOU (Shogi) kifu auto-export tweak. Watches every match in KIOU and, the moment a game ends, calls the app's built-in KIF writer (GameController.GetKifuText) and saves the result as a .kif file under the app's Documents/KiouKifExporter directory so it shows up in the Files app for AirDrop or hand-off to a kifu viewer (PiyoShogi, Shogi Browser Q, etc). No HTTP server, no WebSocket, no host-side bridge — strictly iPhone-local. Observation-only with respect to game state. For authorized testing only.
+Maintainer: NEVER KNOWS BEST
+Author: tkgstrator
+Section: Tweaks
+Depends: mobilesubstrate

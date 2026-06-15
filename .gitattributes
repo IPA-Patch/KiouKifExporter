@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+# Binary assets — never normalize.
+*.webp binary
+*.png binary
+*.jpg binary
+*.a binary
+*.dylib binary
+*.deb binary
