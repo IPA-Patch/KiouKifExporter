@@ -24,7 +24,7 @@ env:
 
 jobs:
   release:
-    name: build + release
+    name: Build + Release
     runs-on: ubuntu-latest
     steps:
       - name: Resolve tag
@@ -37,7 +37,7 @@ jobs:
           fi
 
       - name: Checkout source at tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ steps.tag.outputs.value }}
           fetch-depth: 0
