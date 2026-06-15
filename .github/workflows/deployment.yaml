@@ -117,34 +117,57 @@ jobs:
           make jailed
           ls -la packages/jailed/
 
-      - name: Sanity check jailed dylib (no external hook engine)
+      - name: Build binpatch .dylib (static-patch slot publisher)
+        # The binpatch flavor is what users pair with `make ipa` on
+        # their own host against a decrypted KIOU IPA. Same Dobby-static
+        # link shape as the jailed dylib, but compiled with
+        # -DIPA_BINPATCH=1 so the constructor publishes hook function
+        # pointers into a reserved __DATA slot instead of inline-hooking
+        # __TEXT — the only mode that survives iOS 18's CSM.
         run: |
-          DYLIB=packages/jailed/KiouKifExporter.dylib
-          test -f "$DYLIB"
-          if command -v otool >/dev/null 2>&1; then
-              otool -L "$DYLIB"
-              if otool -L "$DYLIB" | grep -E "libsubstrate|libdobby"; then
-                  echo "::error::Jailed dylib leaks an external hook-engine dependency"
-                  exit 1
+          make binpatch
+          ls -la packages/binpatch/
+
+      - name: Sanity check jailed + binpatch dylibs (no external hook engine)
+        # Both Dobby-static dylibs must NOT link to libsubstrate or
+        # libdobby — those references would brick Sideloadly / patched
+        # IPA installs at load time.
+        run: |
+          for DYLIB in packages/jailed/KiouKifExporter.dylib \
+                       packages/binpatch/KiouKifExporter.dylib; do
+              test -f "$DYLIB"
+              if command -v otool >/dev/null 2>&1; then
+                  otool -L "$DYLIB"
+                  if otool -L "$DYLIB" | grep -E "libsubstrate|libdobby"; then
+                      echo "::error::$DYLIB leaks an external hook-engine dependency"
+                      exit 1
+                  fi
+              else
+                  strings "$DYLIB" | grep -E "libsubstrate|libdobby\.dylib" \
+                      && { echo "::error::$DYLIB leaks an external hook-engine dependency"; exit 1; } \
+                      || echo "$DYLIB: no external hook-engine references found"
               fi
-          else
-              strings "$DYLIB" | grep -E "libsubstrate|libdobby\.dylib" \
-                  && { echo "::error::Jailed dylib leaks an external hook-engine dependency"; exit 1; } \
-                  || echo "no external hook-engine references found"
-          fi
+          done
 
       - name: Stage release assets
         id: assets
+        # We ship the .deb, the jailed dylib, and the binpatch dylib —
+        # but never the patched IPA itself, since that would re-bundle
+        # the decrypted KIOU UnityFramework the operator supplied.
+        # Users wanting the patched IPA pair the binpatch dylib with
+        # `make ipa DECRYPTED_IPA=...` on their own host.
         run: |
           mkdir -p dist
           # Versioned .deb file name copied verbatim out of packages/.
           cp packages/*.deb dist/
-          # Rename the jailed dylib to include the tag so Releases makes
-          # it obvious which build a user is grabbing.
+          # Rename the dylibs to include the tag so Releases makes it
+          # obvious which build a user is grabbing.
           TAG="${{ steps.tag.outputs.value }}"
           VER="${TAG#v}"
           cp packages/jailed/KiouKifExporter.dylib \
              "dist/KiouKifExporter-${VER}-jailed.dylib"
+          cp packages/binpatch/KiouKifExporter.dylib \
+             "dist/KiouKifExporter-${VER}-binpatch.dylib"
           ls -la dist/
 
       - name: Compute SHA256 checksums

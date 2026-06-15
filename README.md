@@ -250,19 +250,27 @@ go into **Settings -> Advanced** and add the dylib + tick file sharing.
 ### Statically-patched IPA (TrollStore / Sideloadly / AltStore on iOS 18)
 
 For non-jailbroken iOS 18 — and as a generally safer option on any
-iOS — Kiou Kif Exporter ships a pre-patched UnityFramework that
-publishes hook function pointers into a reserved `__DATA` slot, so
+iOS — Kiou Kif Exporter publishes hook function pointers into a
+reserved `__DATA` slot of a statically-patched UnityFramework, so
 every `IMatchMode.OnMatchEndAsync` calls into the dylib without
-needing any runtime hook engine. The build pipeline assembles a ready
-IPA from a decrypted KIOU `.ipa` you supply.
+needing any runtime hook engine. The patched IPA is **assembled on
+your own host** from a decrypted KIOU `.ipa` you supply — the
+project never redistributes a re-bundled KIOU binary.
 
-1. Download the patched IPA from the
-   [Releases page](https://github.com/IPA-Patch/KiouKifExporter/releases),
-   or build one locally with `make ipa DECRYPTED_IPA=…` (see
-   [Build > Patched IPA](#patched-ipa-distribution)).
-2. Install the IPA through your usual non-JB channel — TrollStore,
-   Sideloadly, AltStore, or an Apple Developer Program signing flow.
-3. Launch KIOU. The KIF folder shows up in Files.app under
+1. Download
+   `KiouKifExporter-<ver>-binpatch.dylib` from the
+   [Releases page](https://github.com/IPA-Patch/KiouKifExporter/releases).
+   This is the binpatch flavor of the dylib (Dobby-static, slot-publisher
+   constructor — not the runtime-hook `-jailed.dylib`).
+2. On your host, drop a decrypted KIOU `.ipa` at
+   `assets/Kiou-1.0.1.ipa` (or pass `DECRYPTED_IPA=` explicitly) and
+   build the patched IPA — see [Build > Patched IPA](#patched-ipa-distribution).
+   This rewires UnityFramework, adds an `LC_LOAD_DYLIB` for the dylib,
+   and re-zips into `packages/ipa/KiouKifExporter-binpatch.ipa`.
+3. Install the resulting IPA through your usual non-JB channel —
+   TrollStore, Sideloadly, AltStore, or an Apple Developer Program
+   signing flow.
+4. Launch KIOU. The KIF folder shows up in Files.app under
    **On My iPhone -> KIOU -> KiouKifExporter** after the first match.
 
 The patched IPA already has `UIFileSharingEnabled` and
