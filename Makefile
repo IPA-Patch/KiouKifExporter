@@ -1,129 +1,184 @@
-TARGET := iphone:clang:16.5:15.0
-INSTALL_TARGET_PROCESSES = KIOU
-ARCHS = arm64
-THEOS_PACKAGE_SCHEME = rootless
-THEOS_DEVICE_IP ?= 192.168.0.49
+# ===========================================================================
+# IPA-Patch tweak Makefile.
+#
+# Targets:
+#   make            — JB rootless .deb (MSHookFunction via libsubstrate)
+#   make package    — same, packaged
+#   make jailed     — Dobby-static .dylib for Sideloadly injection (iOS 15-17)
+#   make binpatch   — Dobby-static .dylib for the statically-patched IPA path
+#                     (iOS 18 sideload; the only mode that survives CSM).
+#   make ipa        — patched IPA assembled from $(DECRYPTED_IPA)
+#
+# Layout: every project-specific value lives in the PROJECT VARIABLES
+# block below. Adapting this Makefile to a sibling tweak should be that
+# one block + the recipe + the source dir; the build rules below stay
+# verbatim.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# PROJECT VARIABLES — only block that needs editing per tweak.
+# ---------------------------------------------------------------------------
+TWEAK_NAME               := KiouKifExporter
+TWEAK_SOURCES_DIR        := Sources/$(TWEAK_NAME)
+
+# Process killed at install-time and bundle id used to relaunch the host app.
+TARGET_PROCESS           := KIOU
+TARGET_BUNDLE_ID         := com.neconome.shogi
+
+# Decrypted IPA the binpatch pipeline consumes. App Store IPAs ship
+# FairPlay-encrypted; you need a frida-ios-dump-style decrypted copy.
+# The patcher never redistributes it; the operator drops one under
+# assets/. Override on the command line:
+#   make ipa DECRYPTED_IPA=/path/to/decrypted.ipa
+DECRYPTED_IPA            ?= $(CURDIR)/assets/Kiou-1.0.1.ipa
+# Python recipe module driving the static patcher (must be importable from
+# the project root with `recipes/` on PYTHONPATH).
+IPA_RECIPE               := recipes.kioukifexporter
+# Mach-O basename inside the IPA that recipes/ targets.
+IPA_FRAMEWORK            := UnityFramework
+
+# Preprocessor macro that carries the short HEAD commit into the dylib
+# (referenced from C as a string literal). Rename freely; just keep the
+# matching `#ifndef … #define …` in the tweak's Internal.h aligned.
+BUILD_COMMIT_DEFINE      := KIOU_KIF_EXPORTER_COMMIT
+
+# ---------------------------------------------------------------------------
+# Theos boilerplate.
+# ---------------------------------------------------------------------------
+TARGET                   := iphone:clang:16.5:15.0
+INSTALL_TARGET_PROCESSES := $(TARGET_PROCESS)
+ARCHS                    := arm64
+THEOS_PACKAGE_SCHEME     := rootless
+THEOS_DEVICE_IP          ?= 192.168.0.49
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = KiouKifExporter
-
-KiouKifExporter_FILES = $(shell find Sources/KiouKifExporter -name '*.m' -o -name '*.c' -o -name '*.mm' -o -name '*.cpp')
-# Shared logging + binpatch implementations live in the IPA-Patch/Common
-# submodule under Sources/Common/. il2cpp / hook-engine headers are
-# inline-only so they don't need to be listed here.
-KiouKifExporter_FILES += Sources/Common/logging.m
-# binpatch.m provides ipa_binpatch_find_image (used by Tweak.m on every
-# build) and ipa_binpatch_resolve_orig (linked in but never called in
-# the current KifExporter design — the cave chains back to the original
-# itself, no orig_*() trampoline needed). Cheap, no runtime overhead
-# when unused, and future hook additions get the trampoline plumbing
-# for free.
-KiouKifExporter_FILES += Sources/Common/binpatch.m
+# Theos derives every per-tweak variable from $(TWEAK_NAME) — the
+# variable's exact case must match the tweak name. Going through
+# $(TWEAK_NAME)_FOO keeps that constraint in one place and stops the
+# build file from sprouting a "KiouKifExporter_" CamelCase prefix next
+# to the project's own UPPER_SNAKE_CASE macros.
+$(TWEAK_NAME)_FILES      := $(shell find $(TWEAK_SOURCES_DIR) -name '*.m' -o -name '*.c' -o -name '*.mm' -o -name '*.cpp')
+# Common runtime — git submodule at Sources/Common. il2cpp.h /
+# hookengine.h are header-only; logging.m and binpatch.m are the only
+# translation units to compile. binpatch.m exports two read-only
+# helpers (image lookup + B<cave> decode); KifExporter only calls the
+# former (from Tweak.m), but the latter costs nothing to link and the
+# next hook addition gets the trampoline plumbing for free.
+$(TWEAK_NAME)_FILES      += Sources/Common/logging.m
+$(TWEAK_NAME)_FILES      += Sources/Common/binpatch.m
 
 # Build-time git short HEAD (7 chars). No -dirty suffix for now.
-KIOU_KIF_EXPORTER_COMMIT ?= $(shell git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)
+BUILD_COMMIT             ?= $(shell git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)
 
-KiouKifExporter_CFLAGS = -fobjc-arc -Wno-unused-function -DKIOU_KIF_EXPORTER_COMMIT=\"$(KIOU_KIF_EXPORTER_COMMIT)\" -ISources/Common
-KiouKifExporter_FRAMEWORKS = Foundation
+$(TWEAK_NAME)_CFLAGS     := -fobjc-arc -Wno-unused-function \
+                            -D$(BUILD_COMMIT_DEFINE)=\"$(BUILD_COMMIT)\" \
+                            -ISources/Common -I$(TWEAK_SOURCES_DIR)
+$(TWEAK_NAME)_FRAMEWORKS := Foundation
 
 # ---------------------------------------------------------------------------
-# Hook engine selection — mirrors KiouUsiProxy/Makefile.
+# Hook engine / distribution selection.
 #
 #   default (JB / rootless): MobileSubstrate (MSHookFunction in libsubstrate).
-#                            Useful only for engineering convenience on a
-#                            jailbroken device — production users target
-#                            the JAILED=1 build below.
-#   JAILED=1               : Dobby, statically linked from the KiouEditor
-#                            vendor tree so we don't duplicate the .a.
+#   JAILED=1               : Dobby, statically linked from vendor/dobby/lib/
+#                            libdobby.a so the dylib has no external
+#                            hook-engine dependency. Useful on jailbroken
+#                            iOS 15-17; on iOS 18 the runtime mprotect/memcpy
+#                            inline rewrite is killed by Code Signing Monitor
+#                            (see docs/binpatch.md), so iOS 18 sideload
+#                            targets must go through BINPATCH=1 instead.
+#   BINPATCH=1             : Statically-patched $(IPA_FRAMEWORK) distribution.
+#                            The Mach-O is rewritten ahead of time so each
+#                            hook site BL's into a __TEXT cave that calls
+#                            the dylib through a __DATA hook-slot table;
+#                            the dylib only ever writes to __DATA so CSM
+#                            stays happy. Implies JAILED=1 (no libsubstrate
+#                            dependency) and routes the file log into
+#                            Documents/ so operators can read it via
+#                            Files.app.
 #
-# vendor/dobby ships in-tree (vendored, not a symlink) so the repo is
-# self-contained. Sources/Common/hookengine.h picks between MSHookFunction
-# and DobbyHook at compile time, driven by -DIPA_JAILED=1.
+# Sources/Common/hookengine.h's shim picks the matching API at compile
+# time. Even though the binpatch codepath never invokes DobbyHook at
+# runtime, keeping the link shape identical to `jailed::` means the
+# existing hookengine include + Hook_*.m TUs compile cleanly and the
+# dylib has zero external hook-engine dependency.
 # ---------------------------------------------------------------------------
-# Phase 1.5 binary-patch distribution implies the jailed link shape:
-# the dylib gets injected via LC_LOAD_DYLIB into a statically-patched
-# UnityFramework on iOS 18, so it must NOT depend on libsubstrate. The
-# hookengine shim still resolves to Dobby (statically linked from the
-# vendor tree) — even though the binpatch codepath never actually invokes
-# DobbyHook at runtime, keeping the link shape identical to `jailed::`
-# means the existing hookengine include + the Hook_*.m TU compile cleanly
-# and the dylib has zero external hook-engine dependency.
 ifeq ($(BINPATCH),1)
-    JAILED := 1
-    KiouKifExporter_CFLAGS  += -DIPA_BINPATCH=1
-    # On iOS 18 / non-jailbreak the sandbox tmp/ is invisible from the
-    # host's perspective (no SSH, no Filza). Push the file log into
-    # Documents/ instead so operators can read it through Files.app once
-    # the patched bundle has UIFileSharingEnabled set.
-    KiouKifExporter_CFLAGS  += -DIPA_LOG_TO_DOCUMENTS=1
+    JAILED                   := 1
+    $(TWEAK_NAME)_CFLAGS     += -DIPA_BINPATCH=1 -DIPA_LOG_TO_DOCUMENTS=1
 endif
 
 ifeq ($(JAILED),1)
-    KiouKifExporter_CFLAGS  += -DIPA_JAILED=1 -Ivendor/dobby/include
-    KiouKifExporter_LDFLAGS  = -Lvendor/dobby/lib -ldobby -lc++ -lc++abi
+    $(TWEAK_NAME)_CFLAGS     += -DIPA_JAILED=1 -Ivendor/dobby/include
+    # Dobby is C++; pull in libc++ for __cxa_guard_*, __cxa_pure_virtual, etc.
+    $(TWEAK_NAME)_LDFLAGS    := -Lvendor/dobby/lib -ldobby -lc++ -lc++abi
 else
-    KiouKifExporter_LDFLAGS  = -lsubstrate
+    $(TWEAK_NAME)_LDFLAGS    := -lsubstrate
 endif
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
 after-install::
-	install.exec "chmod 755 /var/jb/Library/MobileSubstrate/DynamicLibraries/KiouKifExporter.dylib"
-	install.exec "sleep 1; (open com.neconome.shogi 2>/dev/null || uiopen com.neconome.shogi:// 2>/dev/null || echo 'no launcher tool (uiopen/open); start KIOU manually')"
+	install.exec "chmod 755 /var/jb/Library/MobileSubstrate/DynamicLibraries/$(TWEAK_NAME).dylib"
+	# INSTALL_TARGET_PROCESSES killed the app; relaunch via whichever launcher tool is present.
+	install.exec "sleep 1; (open $(TARGET_BUNDLE_ID) 2>/dev/null || uiopen $(TARGET_BUNDLE_ID):// 2>/dev/null || echo 'no launcher tool (uiopen/open); start $(TARGET_PROCESS) manually')"
 
-# jailed distribution: rebuild with Dobby statically linked, copy into
-# packages/jailed/ for Sideloadly injection.
+# jailed distribution: rebuild with Dobby statically linked, then copy the
+# resulting .dylib into packages/jailed/ for Sideloadly injection.
+# Verifies the final binary has no libsubstrate/libdobby external dep.
 jailed::
 	$(MAKE) JAILED=1 clean
 	$(MAKE) JAILED=1 all
 	$(ECHO_NOTHING)mkdir -p packages/jailed$(ECHO_END)
-	$(ECHO_NOTHING)cp $(THEOS_OBJ_DIR)/KiouKifExporter.dylib packages/jailed/KiouKifExporter.dylib$(ECHO_END)
-	@echo "jailed dylib -> packages/jailed/KiouKifExporter.dylib"
+	$(ECHO_NOTHING)cp $(THEOS_OBJ_DIR)/$(TWEAK_NAME).dylib packages/jailed/$(TWEAK_NAME).dylib$(ECHO_END)
+	@echo "jailed dylib -> packages/jailed/$(TWEAK_NAME).dylib"
 	@echo "--- otool -L (must NOT list libsubstrate or libdobby) ---"
-	@$(THEOS)/toolchain/linux/iphone/bin/otool -L packages/jailed/KiouKifExporter.dylib 2>/dev/null \
-	  || otool -L packages/jailed/KiouKifExporter.dylib 2>/dev/null \
+	@$(THEOS)/toolchain/linux/iphone/bin/otool -L packages/jailed/$(TWEAK_NAME).dylib 2>/dev/null \
+	  || otool -L packages/jailed/$(TWEAK_NAME).dylib 2>/dev/null \
 	  || echo "(otool unavailable on host; inspect the dylib on a Mac/iOS device)"
 
+# ---------------------------------------------------------------------------
 # binpatch distribution: same link shape as `jailed::` (Dobby statically
-# linked, no libsubstrate) but with -DIPA_BINPATCH=1 so the constructor
-# publishes the hook pointer into UnityFramework's reserved __DATA slot
-# instead of trying to MSHookFunction/DobbyHook into __TEXT. This is the
-# only build mode that survives iOS 18's Code Signing Monitor. Drops the
-# artifact into packages/binpatch/ for the patched-IPA pipeline.
+# linked, no libsubstrate dependency) but with -DIPA_BINPATCH=1 so the
+# constructor publishes hook function pointers into the patched binary's
+# reserved __DATA slot table instead of trying to inline-rewrite __TEXT.
+# This is the only build mode that survives iOS 18's Code Signing Monitor
+# on a sideloaded IPA. Drops the artifact into packages/binpatch/.
+# ---------------------------------------------------------------------------
 binpatch::
 	$(MAKE) BINPATCH=1 clean
 	$(MAKE) BINPATCH=1 all
 	$(ECHO_NOTHING)mkdir -p packages/binpatch$(ECHO_END)
-	$(ECHO_NOTHING)cp $(THEOS_OBJ_DIR)/KiouKifExporter.dylib packages/binpatch/KiouKifExporter.dylib$(ECHO_END)
-	@echo "binpatch dylib -> packages/binpatch/KiouKifExporter.dylib"
+	$(ECHO_NOTHING)cp $(THEOS_OBJ_DIR)/$(TWEAK_NAME).dylib packages/binpatch/$(TWEAK_NAME).dylib$(ECHO_END)
+	@echo "binpatch dylib -> packages/binpatch/$(TWEAK_NAME).dylib"
 	@echo "--- otool -L (must NOT list libsubstrate or libdobby) ---"
-	@$(THEOS)/toolchain/linux/iphone/bin/otool -L packages/binpatch/KiouKifExporter.dylib 2>/dev/null \
-	  || otool -L packages/binpatch/KiouKifExporter.dylib 2>/dev/null \
+	@$(THEOS)/toolchain/linux/iphone/bin/otool -L packages/binpatch/$(TWEAK_NAME).dylib 2>/dev/null \
+	  || otool -L packages/binpatch/$(TWEAK_NAME).dylib 2>/dev/null \
 	  || echo "(otool unavailable on host; inspect the dylib on a Mac/iOS device)"
 
-# Full patched-IPA pipeline (Phase 1.5 distribution unit).
+# ---------------------------------------------------------------------------
+# Full patched-IPA pipeline.
 #
 # Builds the binpatch dylib (if missing) and assembles a TrollStore /
-# Sideloadly-ready IPA. The user supplies a decrypted clean KIOU IPA via
-# KIOU_CLEAN_IPA; tools/build_patched_ipa.sh is target-agnostic and
-# driven by the KIOU-specific tools/recipes/kioukifexporter.py recipe.
+# Sideloadly / AltStore / Apple Developer Program-ready IPA from the
+# decrypted IPA supplied by the operator via DECRYPTED_IPA. The patcher
+# itself is the target-agnostic shared/tools/build_patched_ipa.sh driven
+# by the tweak-specific recipe ($(IPA_RECIPE)).
 #
-# This target NEVER redistributes a clean KIOU IPA — supply your own.
-KIOU_CLEAN_IPA ?= /home/vscode/app/assets/Kiou-1.0.1.ipa
-KIOU_IPA_RECIPE    := recipes.kioukifexporter
-KIOU_IPA_FRAMEWORK := UnityFramework
-KIOU_IPA_DYLIB     := $(PWD)/packages/binpatch/KiouKifExporter.dylib
+# This target NEVER ships a decrypted target IPA — supply your own
+# (see docs/porting.md for the dump procedure).
+# ---------------------------------------------------------------------------
+IPA_DYLIB                := $(CURDIR)/packages/binpatch/$(TWEAK_NAME).dylib
 
 ipa:: binpatch
-	@echo "==> assembling patched IPA from $(KIOU_CLEAN_IPA)"
-	@if [ ! -f "$(KIOU_CLEAN_IPA)" ]; then \
-	  echo "error: clean KIOU IPA missing at $(KIOU_CLEAN_IPA)"; \
-	  echo "       override with: make ipa KIOU_CLEAN_IPA=/path/to/clean.ipa"; \
+	@echo "==> assembling patched IPA from $(DECRYPTED_IPA)"
+	@if [ ! -f "$(DECRYPTED_IPA)" ]; then \
+	  echo "error: decrypted IPA missing at $(DECRYPTED_IPA)"; \
+	  echo "       override with: make ipa DECRYPTED_IPA=/path/to/decrypted.ipa"; \
 	  exit 1; \
 	fi
 	@./shared/tools/build_patched_ipa.sh \
-	  --recipe    "$(KIOU_IPA_RECIPE)" \
-	  --framework "$(KIOU_IPA_FRAMEWORK)" \
-	  --dylib     "$(KIOU_IPA_DYLIB)" \
-	  --input     "$(KIOU_CLEAN_IPA)"
+	  --recipe    "$(IPA_RECIPE)" \
+	  --framework "$(IPA_FRAMEWORK)" \
+	  --dylib     "$(IPA_DYLIB)" \
+	  --input     "$(DECRYPTED_IPA)"
