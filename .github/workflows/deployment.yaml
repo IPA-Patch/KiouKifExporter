@@ -25,10 +25,7 @@ env:
 jobs:
   release:
     name: build + release
-    # See integration.yaml: pinned to 22.04 because sbingner's iOS arm64e
-    # toolchain links against libtinfo.so.5 / libncurses5, which Ubuntu
-    # noble (24.04) no longer ships.
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - name: Resolve tag
         id: tag
@@ -51,11 +48,14 @@ jobs:
           submodules: recursive
 
       - name: Install host build tools
+        # libtinfo6 / libncurses6 are runtime deps of L1ghtmann's iOS
+        # cross-clang (mirror what the devcontainer's Dockerfile installs).
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
               build-essential curl git make perl xz-utils \
-              libplist-utils libc++-dev
+              libplist-utils libc++-dev \
+              libtinfo6 libncurses6
 
       - name: Install ldid
         # `ldid` isn't packaged for Ubuntu noble (24.04). Grab the
@@ -76,29 +76,27 @@ jobs:
         with:
           path: |
             theos
-          # See integration.yaml — bumped to v2 to invalidate the broken
-          # v1 layout (toolchain extracted at the wrong path).
-          key: theos-linux-${{ env.IOS_SDK_VERSION }}-v2
+          # See integration.yaml — v3 = switched to L1ghtmann's modern
+          # toolchain, the same one the devcontainer uses.
+          key: theos-linux-${{ env.IOS_SDK_VERSION }}-v3
 
       - name: Install Theos
         if: steps.theos-cache.outputs.cache-hit != 'true'
         run: |
           git clone --recursive https://github.com/theos/theos.git "$THEOS"
 
-          # Linux toolchain — see integration.yaml for the full comment.
-          # Archive's top-level is `ios-arm64e-clang-toolchain/`, but Theos
-          # expects $THEOS/toolchain/linux/iphone/bin/clang.
-          mkdir -p "$THEOS/toolchain/linux"
-          curl -L -o /tmp/toolchain.tar.lzma \
-              "https://github.com/sbingner/llvm-project/releases/download/v10.0.0-1/linux-ios-arm64e-clang-toolchain.tar.lzma"
-          tar -xf /tmp/toolchain.tar.lzma -C "$THEOS/toolchain"
-          mv "$THEOS/toolchain/ios-arm64e-clang-toolchain" \
-             "$THEOS/toolchain/linux/iphone"
+          # Linux iOS cross-toolchain — L1ghtmann's modern fork. See
+          # integration.yaml for the full comment. Archive extracts
+          # directly into linux/{iphone,host} under $THEOS/toolchain.
+          ARCH=$(uname -m)
+          curl -fsSL \
+              "https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-${ARCH}.tar.xz" \
+            | tar xJ -C "$THEOS/toolchain"
 
           mkdir -p "$THEOS/sdks"
-          curl -L -o /tmp/sdk.tar.xz \
+          curl -L -o /tmp/sdk.tar.gz \
               "https://github.com/theos/sdks/archive/master.tar.gz"
-          tar -xf /tmp/sdk.tar.xz -C /tmp
+          tar -xf /tmp/sdk.tar.gz -C /tmp
           cp -R "/tmp/sdks-master/iPhoneOS${IOS_SDK_VERSION}.sdk" \
                 "$THEOS/sdks/"
 

@@ -24,15 +24,7 @@ env:
 jobs:
   build:
     name: build (${{ matrix.flavor }})
-    # ubuntu-22.04 still ships libtinfo5 / libncurses5 in apt, which
-    # Sam Bingner's iOS arm64e toolchain (the only Linux iOS cross
-    # toolchain in wide use) was linked against. Ubuntu 24.04 (noble)
-    # dropped those, so `ubuntu-latest` makes clang die with
-    # "libtinfo.so.5: cannot open shared object file" the moment it
-    # runs. Pin to 22.04 here; revisit only when sbingner ships a
-    # noble-compatible build, or when we move to a newer linux-arm64
-    # iOS toolchain that links against modern ncurses.
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -57,11 +49,14 @@ jobs:
           submodules: recursive
 
       - name: Install host build tools
+        # libtinfo6 / libncurses6 are runtime deps of L1ghtmann's iOS
+        # cross-clang (mirror what the devcontainer's Dockerfile installs).
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
               build-essential curl git make perl xz-utils \
-              libplist-utils libc++-dev
+              libplist-utils libc++-dev \
+              libtinfo6 libncurses6
 
       - name: Install ldid
         # `ldid` isn't packaged for Ubuntu noble (24.04), so we grab the
@@ -81,37 +76,32 @@ jobs:
         with:
           path: |
             theos
-          # Bumped to v2: v1 cached a broken layout where the toolchain
-          # archive was extracted as $THEOS/toolchain/ios-arm64e-clang-toolchain/
-          # but Theos's makefiles search $THEOS/toolchain/linux/iphone/bin/clang.
-          # The new install step renames it; bumping the key forces a refresh.
-          key: theos-linux-${{ env.IOS_SDK_VERSION }}-v2
+          # v3: switched to L1ghtmann's modern toolchain (was sbingner's
+          # libtinfo5-linked v10), so any previous cache is unusable.
+          key: theos-linux-${{ env.IOS_SDK_VERSION }}-v3
 
       - name: Install Theos
         if: steps.theos-cache.outputs.cache-hit != 'true'
         run: |
-          # Theos bootstrap. Pin to upstream main; the official installer
-          # already handles toolchain + SDK download.
+          # Theos bootstrap.
           git clone --recursive https://github.com/theos/theos.git "$THEOS"
 
-          # Linux toolchain — Sam Bingner's iOS arm64e cross toolchain.
-          # The archive's top-level is `ios-arm64e-clang-toolchain/`, but
-          # Theos's makefiles look for the compiler at
-          # $THEOS/toolchain/linux/iphone/bin/clang (linux/iphone is the
-          # canonical layout for the Linux host). Rename the extracted
-          # directory so the search hits.
-          mkdir -p "$THEOS/toolchain/linux"
-          curl -L -o /tmp/toolchain.tar.lzma \
-              "https://github.com/sbingner/llvm-project/releases/download/v10.0.0-1/linux-ios-arm64e-clang-toolchain.tar.lzma"
-          tar -xf /tmp/toolchain.tar.lzma -C "$THEOS/toolchain"
-          mv "$THEOS/toolchain/ios-arm64e-clang-toolchain" \
-             "$THEOS/toolchain/linux/iphone"
+          # Linux iOS cross-toolchain — L1ghtmann's modern fork (clang 13,
+          # links against ncurses 6 / libtinfo 6). This matches what the
+          # devcontainer uses and works on Ubuntu 24.04 noble.
+          # The archive's top level extracts straight into a `linux/iphone/`
+          # directory under $THEOS/toolchain, which is what Theos's
+          # makefiles expect — no rename needed.
+          ARCH=$(uname -m)
+          curl -fsSL \
+              "https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-${ARCH}.tar.xz" \
+            | tar xJ -C "$THEOS/toolchain"
 
           # iOS SDK matching IOS_SDK_VERSION.
           mkdir -p "$THEOS/sdks"
-          curl -L -o /tmp/sdk.tar.xz \
+          curl -L -o /tmp/sdk.tar.gz \
               "https://github.com/theos/sdks/archive/master.tar.gz"
-          tar -xf /tmp/sdk.tar.xz -C /tmp
+          tar -xf /tmp/sdk.tar.gz -C /tmp
           cp -R "/tmp/sdks-master/iPhoneOS${IOS_SDK_VERSION}.sdk" \
                 "$THEOS/sdks/"
 
