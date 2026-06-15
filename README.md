@@ -35,19 +35,29 @@ There is no host-side bridge, no WebSocket server, no proxy. The entire
 flow lives in one ~110 KB dylib that hooks five lifecycle methods and
 writes a single file per match.
 
-### Client-side only
+### Observation-only
 
-Every byte Kiou Kif Exporter touches is **on your device, after the match
-has already finished**. The tweak never:
+Kiou Kif Exporter is strictly **read-then-write**. During a match the
+tweak's hooks observe `IMatchMode.InitializeAsync` and
+`IMatchMode.OnPlayerMoveAsync` to keep a live `GameController*` pointer
+in hand; when `IMatchMode.OnMatchEndAsync` fires, the tweak asks KIOU's
+own `KIFWriter.Write` for the finished kifu and writes the resulting
+string to disk. That's all.
 
-- crafts or sends a request to the KIOU backend,
-- replays a captured request, with or without edits,
-- proxies, MITMs, or otherwise sits on the network path,
-- mutates game state, the board position, currency, or any paid entity.
+The tweak never:
 
-Uninstalling the dylib returns KIOU to a fully vanilla state. Existing
-`.kif` files in `Documents/KiouKifExporter/` remain untouched until you
-delete them yourself.
+- writes back into `GameController`, `RecordManager`, or any other
+  in-memory game state,
+- alters which side wins, the move list, the result reason, or the
+  on-screen replay,
+- opens a socket, talks to the KIOU backend, or sits on the network
+  path in any form.
+
+The only piece of state Kiou Kif Exporter creates is a single `.kif`
+file per match, inside the app's own sandbox at
+`Documents/KiouKifExporter/`. Uninstalling the dylib returns KIOU to a
+fully vanilla state and leaves your existing `.kif` files alone until
+you delete them yourself.
 
 ## What you get
 
