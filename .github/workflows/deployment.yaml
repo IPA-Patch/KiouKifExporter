@@ -1,0 +1,135 @@
+name: deployment
+
+# CD: when a v*.*.* tag is pushed, build both flavors and publish them
+# as GitHub Release assets. The release name and tag are identical (no
+# auto-prerelease, no draft); pre-releases ship via tags like v0.2.0-rc.1.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build a release for (e.g. v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write  # required for softprops/action-gh-release
+
+env:
+  THEOS: ${{ github.workspace }}/theos
+  IOS_SDK_VERSION: "16.5"
+
+jobs:
+  release:
+    name: build + release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+              echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+              echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout source at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.value }}
+          fetch-depth: 0
+
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential curl git make perl ldid xz-utils \
+              libplist-utils libc++-dev
+
+      - name: Cache Theos
+        id: theos-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            theos
+          key: theos-linux-${{ env.IOS_SDK_VERSION }}-v1
+
+      - name: Install Theos
+        if: steps.theos-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+
+          mkdir -p "$THEOS/toolchain"
+          curl -L -o /tmp/toolchain.tar.xz \
+              "https://github.com/sbingner/llvm-project/releases/download/v10.0.0-1/linux-ios-arm64e-clang-toolchain.tar.lzma"
+          tar -xf /tmp/toolchain.tar.xz -C "$THEOS/toolchain"
+          mv "$THEOS/toolchain/linux" "$THEOS/toolchain/linux2" || true
+
+          mkdir -p "$THEOS/sdks"
+          curl -L -o /tmp/sdk.tar.xz \
+              "https://github.com/theos/sdks/archive/master.tar.gz"
+          tar -xf /tmp/sdk.tar.xz -C /tmp
+          cp -R "/tmp/sdks-master/iPhoneOS${IOS_SDK_VERSION}.sdk" \
+                "$THEOS/sdks/"
+
+      - name: Build rootless .deb (MobileSubstrate)
+        run: |
+          make clean
+          make package
+          ls -la packages/
+
+      - name: Build jailed .dylib (Dobby static)
+        run: |
+          make jailed
+          ls -la packages/jailed/
+
+      - name: Sanity check jailed dylib (no external hook engine)
+        run: |
+          DYLIB=packages/jailed/KiouKifExporter.dylib
+          test -f "$DYLIB"
+          if command -v otool >/dev/null 2>&1; then
+              otool -L "$DYLIB"
+              if otool -L "$DYLIB" | grep -E "libsubstrate|libdobby"; then
+                  echo "::error::Jailed dylib leaks an external hook-engine dependency"
+                  exit 1
+              fi
+          else
+              strings "$DYLIB" | grep -E "libsubstrate|libdobby\.dylib" \
+                  && { echo "::error::Jailed dylib leaks an external hook-engine dependency"; exit 1; } \
+                  || echo "no external hook-engine references found"
+          fi
+
+      - name: Stage release assets
+        id: assets
+        run: |
+          mkdir -p dist
+          # Versioned .deb file name copied verbatim out of packages/.
+          cp packages/*.deb dist/
+          # Rename the jailed dylib to include the tag so Releases makes
+          # it obvious which build a user is grabbing.
+          TAG="${{ steps.tag.outputs.value }}"
+          VER="${TAG#v}"
+          cp packages/jailed/KiouKifExporter.dylib \
+             "dist/KiouKifExporter-${VER}-jailed.dylib"
+          ls -la dist/
+
+      - name: Compute SHA256 checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.value }}
+          name: ${{ steps.tag.outputs.value }}
+          generate_release_notes: true
+          files: |
+            dist/*.deb
+            dist/*.dylib
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
