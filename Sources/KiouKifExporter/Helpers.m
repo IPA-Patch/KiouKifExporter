@@ -42,14 +42,19 @@
 //          ↓
 //     USIParser.ParseUSI(usiString)          → RecordManager*
 //          ↓
-//     KIFWriteOptions..ctor() on raw buffer  → opts*  (all fields null-init)
+//     KIFWriteOptions..ctor() on raw buffer  → opts*  (all fields zero-init by ctor)
+//          ↓
+//     kif_fill_write_options(opts, ...)      → BlackPlayerName / WhitePlayerName /
+//                                              StartDateTime / MatchTitle /
+//                                              TimeRuleLabel / EndingLabel populated
 //          ↓
 //     KIFWriter.Write(record, opts)          → standard KIF 2.0 string
 //
 // Verified on-device with packages/frida/hook_kiou_kifwriter_probe.js — the
 // raw-allocated KIFWriteOptions buffer is accepted because KIFWriter.Write
 // only reads through non-virtual auto-property getters. No il2cpp_object_new
-// or class-from-name plumbing required.
+// or class-from-name plumbing required. The only field still intentionally NULL
+// after the fill is ThinkingTimesMicros (per-move clock, queued for v0.4).
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
