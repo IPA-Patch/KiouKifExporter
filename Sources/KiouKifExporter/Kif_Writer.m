@@ -69,3 +69,106 @@ NSString *kif_writer_emit_for_match_end(void *gameCtrl,
               path]);
     return path;
 }
+
+// ===========================================================================
+// kif_binpatch_OnMatchEndAsync — Phase 1.5 binpatch entry point.
+//
+// Called from the cave that patch_unity.py emits into UnityFramework. The
+// cave loads our address from the __DATA slot (KIOU_HOOK_SLOT_RVA) and
+// BLR's us BEFORE re-running the displaced prologue + jumping to
+// `orig + 4`. Therefore:
+//   * the live GameController is still alive (nothing has been torn down
+//     yet for this match-end)
+//   * our return value is dead — the cave overwrites x0/x1 with the
+//     original method's result a few instructions later
+//
+// Always exported (not behind #ifdef KIOU_BINPATCH) so that the substrate
+// / jailed builds keep a single, stable symbol table. The function is
+// trivially cheap when never reached.
+// ===========================================================================
+// Resolve the live GameController for the IMatchMode instance `self`,
+// using the cave-supplied `mode_index` to look up the right
+// `_gameAdapter` field offset directly. No heuristic, no fallback offset
+// scan — those were the source of the production SIGBUS at
+// `readPtr(unknownField + 0x10)` on iOS 18.7.7 (CPUStreamMode hit
+// LocalPvPMode's 0x18 candidate first and walked into an invalid sibling
+// pointer).
+//
+// Logs the chain (self / adapter / gameCtrl / positionHistory) on failure
+// so the BINPATCH log shows exactly where the walk gave up.
+static void *kif_binpatch_resolveGameController(void *self,
+                                                uint32_t mode_index) {
+    if (mode_index >= KIOU_BINPATCH_MODE_COUNT) {
+        file_log([NSString stringWithFormat:
+                  @"[BINPATCH] mode_index=%u out of range (count=%d)",
+                  mode_index, KIOU_BINPATCH_MODE_COUNT]);
+        return NULL;
+    }
+    if (!ptrLooksValid(self)) {
+        file_log([NSString stringWithFormat:
+                  @"[BINPATCH] resolve: self=%p does not look valid", self]);
+        return NULL;
+    }
+    uintptr_t adapterOff = kKiouBinpatchAdapterOffsets[mode_index];
+    void *adapter = readPtr(self, adapterOff);
+    if (!adapter) {
+        file_log([NSString stringWithFormat:
+                  @"[BINPATCH] resolve: self=%p mode=%s adapterOff=0x%lx "
+                  @"-> adapter=NULL",
+                  self, kKiouBinpatchModeNames[mode_index],
+                  (unsigned long)adapterOff]);
+        return NULL;
+    }
+    void *gameCtrl = readPtr(adapter, KIOU_BINPATCH_ADAPTER_OFF_GAMECTRL);
+    if (!gameCtrl) {
+        file_log([NSString stringWithFormat:
+                  @"[BINPATCH] resolve: self=%p adapter=%p -> gameCtrl=NULL",
+                  self, adapter]);
+        return NULL;
+    }
+    return gameCtrl;
+}
+
+UniTaskRet kif_binpatch_OnMatchEndAsync(void *self, void *ct,
+                                        uint32_t mode_index) {
+    (void)ct;
+
+    // mode_index is the cave-injected MOVZ X2,#imm that picks one of
+    // KIOU_BINPATCH_MODE_*. Sanity-clip it so a future cave bug doesn't
+    // turn into a stack overrun reading kKiouBinpatchAdapterOffsets[N].
+    const char *modeName = (mode_index < KIOU_BINPATCH_MODE_COUNT)
+        ? kKiouBinpatchModeNames[mode_index]
+        : "Unknown";
+
+    void *gameCtrl = kif_binpatch_resolveGameController(self, mode_index);
+
+    // Fallback: only useful when both the jailed runtime-hook build and
+    // the binpatch build happen to be loaded into the same process for an
+    // A/B sanity check; the jailed build's InitializeAsync hook populates
+    // g_gameCtrlCache and we can borrow it. Production binpatch installs
+    // do not have the cache populated.
+    if (!gameCtrl) gameCtrl = g_gameCtrlCache;
+
+    if (!gameCtrl) {
+        file_log([NSString stringWithFormat:
+                  @"[BINPATCH] OnMatchEndAsync mode=%s self=%p ct=%p: "
+                  @"GameController unresolved. Skipping KIF emission.",
+                  modeName, self, ct]);
+        return (UniTaskRet){ NULL, NULL };
+    }
+
+    file_log([NSString stringWithFormat:
+              @"[BINPATCH] OnMatchEndAsync mode=%s self=%p ct=%p "
+              @"gameCtrl=%p — emitting KIF",
+              modeName, self, ct, gameCtrl]);
+
+    NSString *path = kif_writer_emit_for_match_end(gameCtrl, modeName);
+    if (path) {
+        file_log([NSString stringWithFormat:
+                  @"[BINPATCH] %s emitted -> %@", modeName, path]);
+    }
+
+    // Return value is irrelevant — the cave throws it away before
+    // returning to the il2cpp caller. Zero it out for shape correctness.
+    return (UniTaskRet){ NULL, NULL };
+}
