@@ -42,14 +42,31 @@
 //          ↓
 //     USIParser.ParseUSI(usiString)          → RecordManager*
 //          ↓
-//     KIFWriteOptions..ctor() on raw buffer  → opts*  (all fields null-init)
+//     [NSMutableData dataWithLength:KIFWRITEOPTIONS_SIZE]
+//                                            → opts*  (raw zeroed buffer)
+//          ↓
+//     KIFWriteOptions..ctor() on opts        → fields stay zero (the ctor itself
+//                                              just runs the il2cpp init; it sets
+//                                              no field to a non-zero value)
+//          ↓
+//     kif_fill_write_options(opts, ...)      → best-effort write of:
+//                                                StartDateTime  (unconditional)
+//                                                MatchTitle     (unconditional)
+//                                                EndingLabel    (from GameController.Reason)
+//                                                BlackPlayerName / WhitePlayerName
+//                                                               (from stateStore RP /
+//                                                                MatchConfig fallback —
+//                                                                NULL on partial failure)
+//                                                TimeRuleLabel  (from MatchConfig — skipped
+//                                                                when no MatchConfig)
 //          ↓
 //     KIFWriter.Write(record, opts)          → standard KIF 2.0 string
 //
 // Verified on-device with packages/frida/hook_kiou_kifwriter_probe.js — the
 // raw-allocated KIFWriteOptions buffer is accepted because KIFWriter.Write
 // only reads through non-virtual auto-property getters. No il2cpp_object_new
-// or class-from-name plumbing required.
+// or class-from-name plumbing required. The only field intentionally never
+// touched by the fill is ThinkingTimesMicros (per-move clock, queued for v0.4).
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
