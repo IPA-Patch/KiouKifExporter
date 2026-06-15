@@ -102,21 +102,24 @@ Every desktop and iOS kifu viewer that reads `.kif` reads this — verified
 against PiyoShogi (iOS) and Kifu for Windows on a standard install. No
 re-encoding, no charset conversion: UTF-8 in, UTF-8 out.
 
-### What's intentionally missing in v0.1
+### What the KIF header carries
 
-Kiou Kif Exporter ships with **`KIFWriteOptions` all-null**, which means
-the header rows below are absent from the output. The KIF is still valid
-and replayable; only the metadata sidecar is empty. Each entry is restored
-in v0.2 — see [Roadmap](#roadmap).
+`KIFWriteOptions` is populated at match end with metadata pulled from
+the live `MatchConfig`, `GameStateStore` and `GameController`. Every
+desktop and iOS viewer that reads `.kif` honors these rows.
 
-| Missing header | Will be filled by |
+| Header | Source |
 |---|---|
-| `先手：<name>` / `後手：<name>` | `MatchConfig.BlackPlayer.Name` / `WhitePlayer.Name`, cached at `InitializeAsync`. |
-| `開始日時：YYYY/MM/DD HH:MM:SS` | Wall-clock `NSDate` captured at `InitializeAsync` and serialized to a `Nullable<DateTime>` tick value. |
-| `棋戦：<title>` | Derived from `MatchMode` ("CPU 対戦", "オンライン対戦", etc). |
-| `持ち時間：<label>` | Built from `MatchConfig.TimeControl` ("1500秒+秒読み60秒" etc). |
-| Per-move `(M:SS/HH:MM:SS)` consumption | `mach_absolute_time()` deltas accumulated per move and packed into `KIFWriteOptions.ThinkingTimesMicros` (a `List<long>`). |
-| `まで○○手で<reason>` ending label | `MatchResult.Reason` enum mapped to `投了` / `詰み` / `時間切れ` / `千日手`. |
+| `先手：<name>` / `後手：<name>` | `GameStateStore._blackPlayerInfo` / `_whitePlayerInfo` (`ReactiveProperty<PlayerInfo>` at +0x50 / +0x58 → currentValue at +0x20 → `Name`), with a fallback to `MatchConfig.<Black|White>Player.Name` for AI / local / replay modes. |
+| `開始日時：YYYY/MM/DD HH:MM:SS` | Wall-clock `NSDate` captured at `InitializeAsync`, packed into a `Nullable<DateTime>` tick value at the match-end fill. |
+| `棋戦：<title>` | Synthesized as `"{mode} @ {iso8601}"` (e.g. `OnlinePvPMode @ 20260615T193557`) via `il2cpp_string_new`. |
+| `持ち時間：<label>` | `kif_build_time_rule_label` from `MatchConfig.TimeControl` (e.g. `1500秒+秒読み60秒`). |
+| `まで○○手で<reason>` ending label | `kif_winreason_label(GameController.<Reason>k__BackingField)` mapped to `投了` / `詰み` / `時間切れ` / `千日手` etc. |
+
+The one slot still intentionally NULL is **per-move consumption times**
+(`KIFWriteOptions.ThinkingTimesMicros`). The KIF body is still valid
+without it; only the `(M:SS/HH:MM:SS)` annotation is absent. This is
+queued for v0.3 — see [Roadmap](#roadmap).
 
 Full implementation map — including each setter RVA, the field offsets,
 and the il2cpp string / List bridging plan — lives in
@@ -380,10 +383,10 @@ Each match produces a tidy run of `[MMODE]` lifecycle lines and a final
 
 | Phase | Scope |
 |---|---|
-| **v0.1** (current) | All 15 `IMatchMode` hooks installed, KIF pipeline live, file naming, sandbox output. `KIFWriteOptions` all-null — no metadata header rows, no per-move consumption times. |
-| **v0.2** | Fill `BlackPlayerName` / `WhitePlayerName` / `StartDateTime` / `MatchTitle` / `TimeRuleLabel` / `EndingLabel` from cached `MatchConfig` + `MatchResult`. Requires `il2cpp_string_new` bridging. |
-| **v0.3** | Per-move consumption times via `mach_absolute_time()` accumulation + `List<long>..ctor()` / `Add(long)` to build `KIFWriteOptions.ThinkingTimesMicros`. |
-| **v0.4** | Binary-patch distribution: a `tools/patch_unity.py` extension that bakes the same hook chain into a static `UnityFramework` patch, so Sideloadly Free Dev Cert installs (where Dobby's `mprotect` writes can get rejected) keep working. |
+| **v0.1** | All 15 `IMatchMode` hooks installed, KIF pipeline live, file naming, sandbox output. `KIFWriteOptions` shipped all-null. |
+| **v0.2** (current) | `BlackPlayerName` / `WhitePlayerName` / `StartDateTime` / `MatchTitle` / `TimeRuleLabel` / `EndingLabel` filled at match end. Player names come from `GameStateStore._<black|white>PlayerInfo` (the same `ReactiveProperty` the on-screen UI reads), with a `MatchConfig` fallback for AI / local / replay modes. |
+| **v0.3** | Per-move consumption times via `mach_absolute_time()` accumulation + `List<long>..ctor()` / `Add(long)` to build `KIFWriteOptions.ThinkingTimesMicros` — restores the `(M:SS/HH:MM:SS)` annotation on each move. |
+| **v0.4** | Static binary patch distribution: bake the same hook chain into a patched `UnityFramework` so non-jailbroken iOS 18 installs (where the CSM kills inline hooks before the dylib's constructor runs) keep working without Dobby. Tracked alongside the sibling KiouEditor binpatch plan. |
 
 ## Sibling tweaks
 
