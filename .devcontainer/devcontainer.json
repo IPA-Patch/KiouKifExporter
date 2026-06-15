@@ -1,0 +1,80 @@
+{
+    "name": "Kiou Kif Exporter",
+    "dockerComposeFile": [
+        "compose.yaml"
+    ],
+    "service": "app",
+    "workspaceFolder": "/home/vscode/app",
+    "shutdownAction": "stopCompose",
+    "remoteUser": "vscode",
+    "remoteEnv": {
+        "WAKATIME_API_KEY": "${localEnv:WAKATIME_API_KEY}",
+        "GH_TOKEN": "${localEnv:GH_TOKEN}",
+        "UV_LINK_MODE": "copy",
+        "ANTHROPIC_BASE_URL": "${localEnv:ANTHROPIC_BASE_URL}",
+        "ANTHROPIC_AUTH_TOKEN": "${localEnv:ANTHROPIC_AUTH_TOKEN}",
+    },
+    "containerEnv": {
+        "CLAUDE_CONFIG_DIR": "/home/vscode/.claude"
+    },
+    "mounts": [
+        "source=${env:HOME}/.aws,target=/home/vscode/.aws,type=bind,consistency=cached,readonly",
+        "source=${env:HOME}/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
+        "source=${env:HOME}/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached,readonly",
+        "source=${env:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind,consistency=cached",
+        "source=${env:HOME}/.codex,target=/home/vscode/.codex,type=bind,consistency=cached",
+        "source=${env:HOME}/.gnupg,target=/home/vscode/.gnupg-host,type=bind,consistency=cached,readonly",
+        "source=${env:HOME}/.gitconfig,target=/home/vscode/.gitconfig,type=bind,consistency=cached,readonly"
+    ],
+    "features": {
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "configureZshAsDefaultShell": true
+        },
+        "ghcr.io/devcontainers/features/python:1": {
+            "version": "3.12"
+        },
+        "ghcr.io/devcontainers/features/github-cli:1": {},
+        "ghcr.io/jsburckhardt/devcontainer-features/uv:1": {},
+        "ghcr.io/stu-bell/devcontainer-features/claude-code:0": {},
+        "ghcr.io/devcontainers/features/node:1": {
+            "version": "25.9.0"
+        },
+        "ghcr.io/devcontainers-extra/features/ffmpeg-apt-get:1": {},
+        "ghcr.io/shyim/devcontainers-features/bun:0": {},
+        "ghcr.io/devcontainers/features/java:1": {
+            "version": "21",
+            "installMaven": false,
+            "installGradle": false
+        }
+    },
+    "otherPortsAttributes": {
+        "onAutoForward": "ignore"
+    },
+    "postAttachCommand": "/bin/sh .devcontainer/postAttachCommand.sh",
+    "postCreateCommand": "/bin/sh .devcontainer/postCreateCommand.sh",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "Anthropic.claude-code",
+                "EditorConfig.EditorConfig",
+                "GitHub.copilot",
+                "GitHub.copilot-chat",
+                "PKief.material-icon-theme",
+                "antfu.file-nesting",
+                "bierner.markdown-mermaid",
+                "bierner.markdown-preview-github-styles",
+                "charliermarsh.ruff",
+                "eamodio.gitlens",
+                "jebbs.markdown-extended",
+                "ms-python.black-formatter",
+                "ms-python.python",
+                "pHofer94.vscode-taskviewexplorer",
+                "redhat.vscode-yaml",
+                "swiftlang.swift-vscode",
+                "tamasfe.even-better-toml",
+                "vsls-contrib.gitdoc"
+            ],
+            "settings": {}
+        }
+    }
+}

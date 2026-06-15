@@ -1,0 +1,20 @@
+[project]
+name = "kioukifexporter-tools"
+version = "0.1.0"
+description = "Static binary-patch tooling for KiouKifExporter (UnityFramework Mach-O patcher, Info.plist patcher, LC_LOAD_DYLIB verifier)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "lief>=0.17.6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.15.9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# tools/ is the package root for unit tests (tools.encode etc.).
+pythonpath = ["."]
