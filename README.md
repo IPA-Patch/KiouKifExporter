@@ -384,7 +384,7 @@ Each match produces a tidy run of `[MMODE]` lifecycle lines and a final
 | Phase | Scope |
 |---|---|
 | **v0.1** | All 15 `IMatchMode` hooks installed, KIF pipeline live, file naming, sandbox output. `KIFWriteOptions` shipped all-null. |
-| **v0.2** (current) | `BlackPlayerName` / `WhitePlayerName` / `StartDateTime` / `MatchTitle` / `TimeRuleLabel` / `EndingLabel` filled at match end. Player names come from `GameStateStore._<black|white>PlayerInfo` (the same `ReactiveProperty` the on-screen UI reads), with a `MatchConfig` fallback for AI / local / replay modes. |
+| **v0.2** (current) | `BlackPlayerName` / `WhitePlayerName` / `StartDateTime` / `MatchTitle` / `TimeRuleLabel` / `EndingLabel` filled at match end. Player names come from `GameStateStore._blackPlayerInfo` / `_whitePlayerInfo` (the same `ReactiveProperty` the on-screen UI reads), with a `MatchConfig` fallback for AI / local / replay modes. |
 | **v0.3** | Per-move consumption times via `mach_absolute_time()` accumulation + `List<long>..ctor()` / `Add(long)` to build `KIFWriteOptions.ThinkingTimesMicros` — restores the `(M:SS/HH:MM:SS)` annotation on each move. |
 | **v0.4** | Static binary patch distribution: bake the same hook chain into a patched `UnityFramework` so non-jailbroken iOS 18 installs (where the CSM kills inline hooks before the dylib's constructor runs) keep working without Dobby. Tracked alongside the sibling KiouEditor binpatch plan. |
 
