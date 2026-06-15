@@ -141,14 +141,21 @@ extern uintptr_t g_unityBase;
 extern void *volatile g_gameCtrlCache;        // Project.ShogiCore.GameController*
 
 // Live MatchConfig captured by Hook_MatchModeObserve.m::DEFINE_INIT_HOOK
-// (Tweak path) so the match-end KIF writer can read BlackPlayer/WhitePlayer/
-// TimeControl off it. The Patched path does NOT use this cache — it pulls
-// MatchConfig out of the IMatchMode instance directly when the concrete
-// subclass holds it as a field (only OnlinePvPMode does on KIOU 1.0.1
-// build 11; the other four pass cfg through InitializeAsync but never
-// latch it, so for those modes MatchConfig is NULL and player-name /
-// time-rule fields stay empty by design).
+// (Tweak path) so the match-end KIF writer can read TimeControl off it
+// and recover the fallback player names. The Patched path pulls
+// MatchConfig out of OnlinePvPMode +0x38 directly.
 extern void *volatile g_matchConfigCache;     // Project.Game.Logic.MatchConfig*
+
+// Live GameStateStore captured the same way. We need it because
+// MatchConfig.BlackPlayer.Name / WhitePlayer.Name stay pinned to the
+// "プレイヤー" placeholder for the entire OnlinePvPMode friend-match
+// lifetime; the real names land on GameStateStore's reactive properties
+// (`_blackPlayerInfo` / `_whitePlayerInfo`) once peer info arrives over
+// the wire. Tweak builds latch it in DEFINE_INIT_HOOK; Patched builds
+// recover it from `self + OnlinePvPMode._stateStore` inside
+// hook_OnMatchEndAsync (only OnlinePvPMode is wired today because
+// that's the only mode where the placeholder problem matters).
+extern void *volatile g_stateStoreCache;      // Project.Game.Logic.GameStateStore*
 
 // MatchMode self caches captured by Hook_MatchModeObserve.m. Populated from
 // InitializeAsync (early) and confirmed by each OnPlayerMoveAsync hit.
@@ -185,11 +192,14 @@ typedef struct { void *r0; void *r1; } UniTaskRet;
 // Returns the absolute path of the file we wrote (autoreleased), or nil
 // on any failure. Failures are logged but do not throw.
 // ---------------------------------------------------------------------------
-// matchConfig may be NULL — fields that need it (player names, time rule)
-// are simply left empty in that case. See g_matchConfigCache in this header
-// for which modes populate it.
+// matchConfig may be NULL — its only use in friend matches is the
+// TimeControlConfig fallback, since the player-name fields are read
+// off `stateStore` (the GameStateStore reactive properties) which is
+// where the post-handshake real names land. stateStore may also be
+// NULL; player-name and time-rule slots stay empty in that case.
 NSString *kif_writer_emit_for_match_end(void *gameCtrl,
                                         void *matchConfig,
+                                        void *stateStore,
                                         const char *matchModeTag);
 
 // ---------------------------------------------------------------------------
@@ -248,13 +258,13 @@ NSString *kif_ensure_output_dir(void);
 // kif_fill_write_options → KIFWriter.Write pipeline and return the
 // resulting KIF 2.0 string. Returns nil on any failure.
 //
-// `matchConfig` and `matchModeTag` flow straight through to
+// `matchConfig`, `stateStore` and `matchModeTag` flow straight through to
 // kif_fill_write_options — see Helpers.m for the per-field semantics.
-// matchConfig may be NULL; matchModeTag may be NULL (then "unknown"
-// shows up in MatchTitle).
+// All three may be NULL; corresponding KIF fields stay empty.
 // ---------------------------------------------------------------------------
 NSString *kifTextFromGameController(void *gameCtrl,
                                     void *matchConfig,
+                                    void *stateStore,
                                     const char *matchModeTag);
 
 // Read the first segment of the start position from GameController for use
@@ -323,14 +333,21 @@ void *il2cpp_str_new(const char *utf8);
 
 // Fill the five string/value KIFWriteOptions fields on `opts` (a buffer
 // produced by KIFWriteOptions..ctor() — see Helpers.m). Reads everything
-// it needs out of `matchConfig` (may be NULL — then BlackPlayerName /
-// WhitePlayerName / TimeRuleLabel are left untouched) and `gameCtrl`
-// (used for the EndingLabel — WinReason enum at GameController +0x30).
-// `matchModeTag` is the static C string used to build MatchTitle.
+// it needs out of `matchConfig` (TimeRuleLabel), `stateStore` (real
+// player names via the reactive properties at
+// GameStateStore +0x50/+0x58 → ReactiveProperty<PlayerInfo>.currentValue
+// at +0x20), and `gameCtrl` (the EndingLabel via the WinReason enum
+// at GameController +0x30). `matchModeTag` is the static C string
+// used to build MatchTitle.
+//
+// All three of matchConfig / stateStore / gameCtrl may be NULL; the
+// corresponding KIF slots stay empty in that case (= same as the
+// pre-Phase-3 emission path).
 //
 // Never throws — every internal failure falls back to leaving the
 // specific field unset.
 void kif_fill_write_options(void *opts,
                             void *matchConfig,
+                            void *stateStore,
                             void *gameCtrl,
                             const char *matchModeTag);
