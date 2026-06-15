@@ -9,6 +9,11 @@
 #                     (iOS 18 sideload; the only mode that survives CSM).
 #   make ipa        — patched IPA assembled from $(DECRYPTED_IPA)
 #
+# Flags (combinable with any target):
+#   TRACE=1         — compile in detailed kif_fill_write_options diagnostics
+#                     (per-step pointer dump + final opts hex). Off in
+#                     release builds.
+#
 # Layout: every project-specific value lives in the PROJECT VARIABLES
 # block below. Adapting this Makefile to a sibling tweak should be that
 # one block + the recipe + the source dir; the build rules below stay
@@ -114,6 +119,20 @@ ifeq ($(JAILED),1)
     $(TWEAK_NAME)_LDFLAGS    := -Lvendor/dobby/lib -ldobby -lc++ -lc++abi
 else
     $(TWEAK_NAME)_LDFLAGS    := -lsubstrate
+endif
+
+# ---------------------------------------------------------------------------
+# Diagnostic switch: `make TRACE=1` (combinable with any other flag, e.g.
+# `make package install TRACE=1`, `make ipa TRACE=1`).
+#
+# Compiles in the kif_trace_log lines inside kif_fill_write_options so the
+# file log gets a per-step pointer + slot dump for every KIF emission.
+# Useful to chase "field came out blank" bugs (MatchConfig NULL, PlayerInfo
+# offset drift, il2cpp_string_new failure, …). Off by default so release
+# builds aren't paying for the formatting.
+# ---------------------------------------------------------------------------
+ifeq ($(TRACE),1)
+    $(TWEAK_NAME)_CFLAGS     += -DKIF_TRACE=1
 endif
 
 include $(THEOS_MAKE_PATH)/tweak.mk

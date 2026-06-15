@@ -58,6 +58,7 @@
 // ---------------------------------------------------------------------------
 void *volatile g_gameCtrlCache         = NULL;
 void *volatile g_matchConfigCache      = NULL;
+void *volatile g_stateStoreCache       = NULL;
 void *volatile g_aiMatchModeCache      = NULL;
 void *volatile g_cpuStreamModeCache    = NULL;
 void *volatile g_onlineModeCache       = NULL;
@@ -119,13 +120,15 @@ static inline BOOL shouldLog(uint32_t n) {
                                                void *ct) {                             \
         if ((CACHE_VAR) != self) (CACHE_VAR) = self;                                   \
         if (cfg && g_matchConfigCache != cfg) g_matchConfigCache = cfg;                \
+        if (store && g_stateStoreCache != store) g_stateStoreCache = store;            \
         if (adapter) {                                                                 \
             void *gc = readPtr(adapter, ADAPTER_OFF_GAME_CONTROLLER);                  \
             if (gc && g_gameCtrlCache != gc) g_gameCtrlCache = gc;                     \
         }                                                                              \
         file_log([NSString stringWithFormat:                                           \
-                  @"[MMODE] " MODE_TAG " Init self=%p cfg=%p adapter=%p gameCtrl=%p",  \
-                  self, cfg, adapter, g_gameCtrlCache]);                               \
+                  @"[MMODE] " MODE_TAG " Init self=%p cfg=%p store=%p "                \
+                  @"adapter=%p gameCtrl=%p",                                            \
+                  self, cfg, store, adapter, g_gameCtrlCache]);                        \
         if (ORIG_VAR) return (ORIG_VAR)(self, cfg, store, adapter, ct);                \
         return (UniTaskRet){ NULL, NULL };                                             \
     }
@@ -181,22 +184,24 @@ DEFINE_OPM_HOOK(replay,    "RecordReplayMode", g_recordReplayModeCache,
 // We do NOT clear g_gameCtrlCache here — the next match's InitializeAsync
 // will overwrite it, and it's cheap to leave stale.
 //
-// We DO clear g_matchConfigCache, because the writer fills KIF player /
-// time-rule fields off it: if a subsequent match somehow starts without
-// the InitializeAsync hook firing (e.g. a mode-switch the hook didn't
-// know to instrument, an in-app retry path that bypasses the prologue
-// we patched, …) the cache must not silently bleed the previous match's
-// player names into the new KIF. Better-blank-than-wrong.
+// We DO clear g_matchConfigCache / g_stateStoreCache, because the writer
+// fills KIF player / time-rule fields off them: if a subsequent match
+// somehow starts without the InitializeAsync hook firing (e.g. a
+// mode-switch the hook didn't know to instrument, an in-app retry path
+// that bypasses the prologue we patched, …) the caches must not silently
+// bleed the previous match's player names into the new KIF.
+// Better-blank-than-wrong.
 // ---------------------------------------------------------------------------
 #define DEFINE_END_HOOK(MODE_LOWER, MODE_TAG, CACHE_VAR, ORIG_VAR)                     \
     static UniTaskRet hook_##MODE_LOWER##_End(void *self, void *ct) {                  \
         file_log([NSString stringWithFormat:                                           \
-                  @"[MMODE] " MODE_TAG " End self=%p gameCtrl=%p cfg=%p",              \
-                  self, g_gameCtrlCache, g_matchConfigCache]);                         \
+                  @"[MMODE] " MODE_TAG " End self=%p gameCtrl=%p cfg=%p store=%p",     \
+                  self, g_gameCtrlCache, g_matchConfigCache, g_stateStoreCache]);      \
         /* Emit the KIF *before* chaining — the cached GameController may */           \
         /* be torn down by the time the original returns. */                           \
         NSString *path = kif_writer_emit_for_match_end(g_gameCtrlCache,                \
                                                        g_matchConfigCache,             \
+                                                       g_stateStoreCache,              \
                                                        MODE_TAG);                       \
         if (path) {                                                                    \
             file_log([NSString stringWithFormat:                                       \
@@ -204,6 +209,7 @@ DEFINE_OPM_HOOK(replay,    "RecordReplayMode", g_recordReplayModeCache,
         }                                                                              \
         (CACHE_VAR) = NULL;                                                            \
         g_matchConfigCache = NULL;                                                     \
+        g_stateStoreCache = NULL;                                                      \
         if (ORIG_VAR) return (ORIG_VAR)(self, ct);                                     \
         return (UniTaskRet){ NULL, NULL };                                             \
     }

@@ -4,6 +4,24 @@
 #import <dlfcn.h>
 
 // ===========================================================================
+// kif_trace_log — KIF_TRACE-gated wrapper around file_log.
+//
+// Diagnostic logging inside kif_fill_write_options (the KIFWriteOptions
+// fill path) is verbose enough that we don't want it in release builds.
+// Pass `-DKIF_TRACE=1` to the compiler (Makefile honors `TRACE=1`) when
+// you need to see every pointer the fill walks and every slot it writes.
+//
+// Implemented as a do-while macro so it's a statement that compiles to
+// nothing in release builds.
+// ===========================================================================
+#if defined(KIF_TRACE) && KIF_TRACE
+  #define kif_trace_log(fmt, ...)                                          \
+      file_log([NSString stringWithFormat:(fmt), ##__VA_ARGS__])
+#else
+  #define kif_trace_log(fmt, ...) do { (void)(fmt); } while (0)
+#endif
+
+// ===========================================================================
 // Helpers.m — small utilities for the KIF export path.
 //
 //   * kif_iso8601_basic_utc_now           — filename timestamp
@@ -59,6 +77,30 @@
 
 // Project.Game.Logic.PlayerInfo -> Name at +0x18 (dump.cs L1419145+).
 #define PI_OFF_NAME                 0x18
+
+// Project.Game.Logic.GameStateStore field offsets (dump.cs L1422268+).
+// _blackPlayerInfo / _whitePlayerInfo are ReactiveProperty<PlayerInfo>*.
+// During friend matches MatchConfig.Black/WhitePlayer.Name stays the
+// "プレイヤー" placeholder until peer-info arrives; the GameStateStore
+// reactive properties get updated then, so they carry the real names by
+// the time OnMatchEndAsync fires.
+#define GSS_OFF_BLACK_PLAYER_INFO   0x50  // ReactiveProperty<PlayerInfo>*
+#define GSS_OFF_WHITE_PLAYER_INFO   0x58  // ReactiveProperty<PlayerInfo>*
+
+// Each IMatchMode subclass stores its GameStateStore at a per-mode
+// offset. We currently only walk this for OnlinePvPMode (the only mode
+// where MatchConfig is initialized to placeholders and the real names
+// arrive over the wire).
+#define ONLINEPVPMODE_OFF_STATE_STORE  0x28  // GameStateStore*
+
+// ReactiveProperty<T> currentValue offset. dump.cs lists every generic
+// instantiation as "offset 0x0", so this had to be probed at runtime —
+// captured from live OnlinePvPMode friend matches on KIOU 1.0.1 build 11
+// against the actual ReactiveProperty<PlayerInfo> instances in
+// GameStateStore. (The probe at PR-time tried 0x10..0x38; only +0x20
+// resolved to a PlayerInfo whose Name was not the "プレイヤー"
+// placeholder.)
+#define RP_OFF_CURRENT_VALUE        0x20  // T currentValue
 
 // Project.Game.Logic.TimeControlConfig (dump.cs L1419538+).
 #define TC_OFF_TIME_SECONDS         0x10  // float
@@ -128,9 +170,9 @@ static void resolveIl2cppFunctions(void) {
 // resulting KIF 2.0 string. Returns nil on any failure (NULL receiver,
 // USI text empty, ParseUSI gave back NULL, KIFWriter.Write threw, …).
 //
-// `matchConfig` may be NULL — in that case player names and the time
-// rule label are simply left empty in the produced KIF (StartDateTime,
-// MatchTitle and EndingLabel still get filled).
+// `matchConfig` / `stateStore` may be NULL; the corresponding KIF
+// slots stay empty in that case (StartDateTime, MatchTitle and
+// EndingLabel still get filled regardless).
 //
 // MethodInfo* trailing arg is NULL throughout — il2cpp tolerates this for
 // instance accessors and static methods in KIOU. Confirmed by Frida probe
@@ -138,6 +180,7 @@ static void resolveIl2cppFunctions(void) {
 // ---------------------------------------------------------------------------
 NSString *kifTextFromGameController(void *gameCtrl,
                                     void *matchConfig,
+                                    void *stateStore,
                                     const char *matchModeTag) {
     resolveIl2cppFunctions();
     if (!g_GetUSIText || !g_ParseUSI || !g_KIFOpts_Ctor || !g_KIFWriter_Write) {
@@ -198,7 +241,7 @@ NSString *kifTextFromGameController(void *gameCtrl,
     // Step 3.5: fill the user-visible KIFWriteOptions fields. Safe to call
     // unconditionally — internal failures fall back to leaving the
     // specific field unset, which matches the pre-Phase-3 behavior.
-    kif_fill_write_options(opts, matchConfig, gameCtrl, matchModeTag);
+    kif_fill_write_options(opts, matchConfig, stateStore, gameCtrl, matchModeTag);
 
     // Step 4: KIFWriter.Write(record, opts) → KIF 2.0 string
     void *kifStrPtr = NULL;
@@ -475,9 +518,18 @@ static NSString *kif_build_time_rule_label(void *tc) {
 // ---------------------------------------------------------------------------
 void kif_fill_write_options(void *opts,
                             void *matchConfig,
+                            void *stateStore,
                             void *gameCtrl,
                             const char *matchModeTag) {
-    if (!opts) return;
+    if (!opts) {
+        kif_trace_log(@"[FILL] opts=NULL — skipping fill entirely");
+        return;
+    }
+
+    kif_trace_log(@"[FILL] enter opts=%p matchConfig=%p stateStore=%p "
+                  @"gameCtrl=%p mode=%s",
+                  opts, matchConfig, stateStore, gameCtrl,
+                  matchModeTag ? matchModeTag : "(null)");
 
     char *base = (char *)opts;
 
@@ -497,29 +549,97 @@ void kif_fill_write_options(void *opts,
     memset(sdt, 0, 16);             // clear padding
     *(uint8_t *)(sdt + 0) = 1;      // hasValue = true
     memcpy(sdt + 8, &dateData, sizeof(uint64_t));
+    kif_trace_log(@"[FILL] StartDateTime ticks=%lld dateData=0x%016llx",
+                  (long long)ticks, (unsigned long long)dateData);
 
     // ----- BlackPlayerName / WhitePlayerName
     //
-    // Borrow the il2cpp string pointer straight out of MatchConfig's
-    // PlayerInfo.Name backing field; same lifetime as MatchConfig itself,
-    // which the IMatchMode pins until OnMatchEnd returns.
-    if (ptrLooksValid(matchConfig)) {
+    // Source order (first match wins, per slot):
+    //   1. GameStateStore.<Black|White>PlayerInfo.currentValue.Name
+    //      — populated once peer info arrives during a friend / online
+    //      match. THIS is where the real names live.
+    //   2. MatchConfig.<Black|White>Player.Name
+    //      — for AI / local matches, MatchConfig carries the names from
+    //      the start. For OnlinePvPMode friend matches it stays at the
+    //      "プレイヤー" placeholder for the whole lifetime, so falling
+    //      back to it gives a blank-looking KIF; we still take it when
+    //      stateStore is missing so AI/local don't regress.
+    void *blackNameStr = NULL;
+    void *whiteNameStr = NULL;
+
+    if (ptrLooksValid(stateStore)) {
+        void *blackRP =
+            readPtr(stateStore, GSS_OFF_BLACK_PLAYER_INFO);
+        void *whiteRP =
+            readPtr(stateStore, GSS_OFF_WHITE_PLAYER_INFO);
+        kif_trace_log(@"[FILL] gss=%p +0x%x blackRP=%p +0x%x whiteRP=%p",
+                      stateStore,
+                      GSS_OFF_BLACK_PLAYER_INFO, blackRP,
+                      GSS_OFF_WHITE_PLAYER_INFO, whiteRP);
+        if (ptrLooksValid(blackRP)) {
+            void *blackPI = readPtr(blackRP, RP_OFF_CURRENT_VALUE);
+            if (ptrLooksValid(blackPI)) {
+                blackNameStr = readPtr(blackPI, PI_OFF_NAME);
+                kif_trace_log(@"[FILL] blackRP +0x%x -> PI=%p +0x%x "
+                              @"-> Name=%p (preview=%@)",
+                              RP_OFF_CURRENT_VALUE, blackPI, PI_OFF_NAME,
+                              blackNameStr,
+                              il2cppStringToNSString(blackNameStr)
+                                  ?: @"(null/not-il2cpp-str)");
+            }
+        }
+        if (ptrLooksValid(whiteRP)) {
+            void *whitePI = readPtr(whiteRP, RP_OFF_CURRENT_VALUE);
+            if (ptrLooksValid(whitePI)) {
+                whiteNameStr = readPtr(whitePI, PI_OFF_NAME);
+                kif_trace_log(@"[FILL] whiteRP +0x%x -> PI=%p +0x%x "
+                              @"-> Name=%p (preview=%@)",
+                              RP_OFF_CURRENT_VALUE, whitePI, PI_OFF_NAME,
+                              whiteNameStr,
+                              il2cppStringToNSString(whiteNameStr)
+                                  ?: @"(null/not-il2cpp-str)");
+            }
+        }
+    }
+
+    // Fallback to MatchConfig if the GameStateStore path didn't yield a
+    // pointer. (AI / local match modes still rely on this path.)
+    if (!ptrLooksValid(blackNameStr) && ptrLooksValid(matchConfig)) {
         void *black = readPtr(matchConfig, MC_OFF_BLACK_PLAYER);
         if (ptrLooksValid(black)) {
-            void *nameStr = readPtr(black, PI_OFF_NAME);
-            if (ptrLooksValid(nameStr)) {
-                memcpy(base + KIFOPTS_OFF_BLACK_PLAYER_NAME,
-                       &nameStr, sizeof(void *));
-            }
+            blackNameStr = readPtr(black, PI_OFF_NAME);
+            kif_trace_log(@"[FILL] fallback cfg+0x%x BlackPlayer=%p "
+                          @"+0x%x Name=%p (preview=%@)",
+                          MC_OFF_BLACK_PLAYER, black, PI_OFF_NAME,
+                          blackNameStr,
+                          il2cppStringToNSString(blackNameStr)
+                              ?: @"(null/not-il2cpp-str)");
         }
+    }
+    if (!ptrLooksValid(whiteNameStr) && ptrLooksValid(matchConfig)) {
         void *white = readPtr(matchConfig, MC_OFF_WHITE_PLAYER);
         if (ptrLooksValid(white)) {
-            void *nameStr = readPtr(white, PI_OFF_NAME);
-            if (ptrLooksValid(nameStr)) {
-                memcpy(base + KIFOPTS_OFF_WHITE_PLAYER_NAME,
-                       &nameStr, sizeof(void *));
-            }
+            whiteNameStr = readPtr(white, PI_OFF_NAME);
+            kif_trace_log(@"[FILL] fallback cfg+0x%x WhitePlayer=%p "
+                          @"+0x%x Name=%p (preview=%@)",
+                          MC_OFF_WHITE_PLAYER, white, PI_OFF_NAME,
+                          whiteNameStr,
+                          il2cppStringToNSString(whiteNameStr)
+                              ?: @"(null/not-il2cpp-str)");
         }
+    }
+
+    if (ptrLooksValid(blackNameStr)) {
+        memcpy(base + KIFOPTS_OFF_BLACK_PLAYER_NAME,
+               &blackNameStr, sizeof(void *));
+        kif_trace_log(@"[FILL] wrote BlackPlayerName=%p @opts+0x%x",
+                      blackNameStr, KIFOPTS_OFF_BLACK_PLAYER_NAME);
+    }
+    if (ptrLooksValid(whiteNameStr)) {
+        memcpy(base + KIFOPTS_OFF_WHITE_PLAYER_NAME,
+               &whiteNameStr, sizeof(void *));
+        kif_trace_log(@"[FILL] wrote WhitePlayerName=%p @opts+0x%x",
+                      whiteNameStr, KIFOPTS_OFF_WHITE_PLAYER_NAME);
     }
 
     // ----- MatchTitle: "{mode} @ {iso8601}" via il2cpp_string_new.
@@ -529,6 +649,8 @@ void kif_fill_write_options(void *opts,
                            matchModeTag ? matchModeTag : "unknown", iso];
         void *titleStr =
             il2cpp_str_new(title.UTF8String);
+        kif_trace_log(@"[FILL] MatchTitle il2cpp_string_new(\"%@\") = %p",
+                      title, titleStr);
         if (titleStr) {
             memcpy(base + KIFOPTS_OFF_MATCH_TITLE,
                    &titleStr, sizeof(void *));
@@ -539,6 +661,9 @@ void kif_fill_write_options(void *opts,
     if (ptrLooksValid(matchConfig)) {
         void *tc = readPtr(matchConfig, MC_OFF_TIME_CONTROL);
         NSString *label = kif_build_time_rule_label(tc);
+        kif_trace_log(@"[FILL] cfg=%p +0x%x TimeControl=%p label=%@",
+                      matchConfig, MC_OFF_TIME_CONTROL, tc,
+                      label ?: @"(nil)");
         if (label) {
             void *labelStr = il2cpp_str_new(label.UTF8String);
             if (labelStr) {
@@ -552,6 +677,9 @@ void kif_fill_write_options(void *opts,
     if (ptrLooksValid(gameCtrl)) {
         int32_t reason = readI32(gameCtrl, GC_OFF_WIN_REASON);
         NSString *label = kif_winreason_label(reason);
+        kif_trace_log(@"[FILL] gc=%p +0x%x WinReason=%d label=%@",
+                      gameCtrl, GC_OFF_WIN_REASON, (int)reason,
+                      label ?: @"(nil — none/unset)");
         if (label) {
             void *labelStr = il2cpp_str_new(label.UTF8String);
             if (labelStr) {
@@ -559,7 +687,27 @@ void kif_fill_write_options(void *opts,
                        &labelStr, sizeof(void *));
             }
         }
+    } else {
+        kif_trace_log(@"[FILL] gameCtrl=%p invalid — EndingLabel left empty",
+                      gameCtrl);
     }
+
+    // Final dump: show every slot we tried to fill, as 8-byte hex.
+    kif_trace_log(@"[FILL] FINAL opts dump:\n"
+                  @"        +0x10 (Black) = 0x%016llx\n"
+                  @"        +0x18 (White) = 0x%016llx\n"
+                  @"        +0x20 (StartDT lo) = 0x%016llx\n"
+                  @"        +0x28 (StartDT hi) = 0x%016llx\n"
+                  @"        +0x30 (Title) = 0x%016llx\n"
+                  @"        +0x38 (TimeRule) = 0x%016llx\n"
+                  @"        +0x48 (Ending) = 0x%016llx",
+                  *(unsigned long long *)(base + 0x10),
+                  *(unsigned long long *)(base + 0x18),
+                  *(unsigned long long *)(base + 0x20),
+                  *(unsigned long long *)(base + 0x28),
+                  *(unsigned long long *)(base + 0x30),
+                  *(unsigned long long *)(base + 0x38),
+                  *(unsigned long long *)(base + 0x48));
 }
 
 // ---------------------------------------------------------------------------
