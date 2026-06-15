@@ -65,7 +65,7 @@
 #define TC_OFF_BYOYOMI              0x14  // float
 #define TC_OFF_INCREMENT            0x18  // float
 
-// System.DateTime kind flag (see DaTeTime struct in dump.cs L37391+).
+// System.DateTime kind flag (see DateTime struct in dump.cs L37391+).
 //   _dateData = ticks | (kind << 62)
 //   kind == 0b01 => Utc
 #define DOTNET_DATETIME_KIND_UTC    0x4000000000000000ULL
@@ -319,8 +319,11 @@ NSString *kif_sanitize_filename_segment(NSString *s, NSUInteger maxChars) {
 //   - utf8 == NULL or empty (KIFWriter.Write treats null fields as
 //     "not present" which is what we want anyway)
 //
-// The returned il2cpp string is owned by the il2cpp runtime; we don't
-// retain it past the synchronous KIFWriter.Write call.
+// The returned il2cpp string is owned by the il2cpp runtime. See the
+// Internal.h declaration of il2cpp_str_new for the GC lifetime caveat —
+// the string is NOT rooted, and we rely on the conservative Boehm GC
+// scanning the live stacks during the synchronous KIFWriter.Write to
+// keep it alive. That's an implementation assumption, not a contract.
 // ---------------------------------------------------------------------------
 typedef void *(*il2cpp_string_new_t)(const char *str);
 
@@ -451,6 +454,24 @@ static NSString *kif_build_time_rule_label(void *tc) {
 // On any partial failure (dlsym(il2cpp_string_new) absent, MatchConfig
 // NULL, etc.) we leave that specific field alone and KIFWriter.Write
 // emits a blank slot for it — same as before this phase.
+//
+// KNOWN GC LIFETIME LIMITATION
+// ----------------------------
+// `opts` is not a managed object (klass header is NULL — see
+// Helpers.m's raw-buffer trick). il2cpp's GC therefore does not
+// treat the il2cpp string pointers we store at offsets 0x10 / 0x18 /
+// 0x30 / 0x38 / 0x48 as roots. The strings remain live across
+// KIFWriter.Write only because Unity's Boehm conservative GC scans
+// the running threads' stacks for pointer-shaped values, and the
+// call is short enough (microseconds) that a GC pass during it is
+// extremely unlikely. This is acceptable for the current synchronous
+// path but is NOT a contract. If a future change makes the call
+// asynchronous, threaded, or moves it onto a path that allocates
+// aggressively, switch to either:
+//   - allocating a real managed KIFWriteOptions via il2cpp_object_new
+//     (the fields become GC-traced), or
+//   - rooting each string with il2cpp_gchandle_new for the duration
+//     of KIFWriter.Write and releasing the handles afterwards.
 // ---------------------------------------------------------------------------
 void kif_fill_write_options(void *opts,
                             void *matchConfig,

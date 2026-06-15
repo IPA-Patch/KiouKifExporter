@@ -291,12 +291,34 @@ NSString *kif_describe_startpos(void *gameCtrl);
 #define KIFOPTS_OFF_TIME_RULE_LABEL   0x38
 #define KIFOPTS_OFF_ENDING_LABEL      0x48
 
-// Allocate (or look up the cached pointer for) an il2cpp System.String*
-// for the given UTF-8 C string. Returns NULL if `il2cpp_string_new` is
-// unresolvable via dlsym or if `utf8` is NULL/empty. The returned pointer
-// is owned by the il2cpp runtime; do NOT free it. We never retain the
-// pointer past the synchronous KIFWriter.Write call so a GC sweep won't
-// invalidate it under us.
+// Allocate an il2cpp System.String* for the given UTF-8 C string.
+// Returns NULL if `il2cpp_string_new` is unresolvable via dlsym or if
+// `utf8` is NULL/empty. The returned pointer is owned by the il2cpp
+// runtime; do NOT free it.
+//
+// GC lifetime caveat (READ BEFORE EXTENDING USAGE)
+// ------------------------------------------------
+// The string is NOT explicitly rooted. Callers store it into the
+// unmanaged KIFWriteOptions buffer (no klass header → il2cpp's GC
+// does not treat the buffer's slots as roots). What keeps the string
+// alive across KIFWriter.Write today is two implementation details:
+//
+//   (a) KIOU runs Unity's Boehm conservative GC, which scans the
+//       live thread stacks looking for pointer-shaped values; while
+//       KIFWriter.Write is on the call stack, opts/this and the
+//       string pointer are typically still in registers or spilled
+//       on the stack, so they get caught by the scan.
+//   (b) KIFWriter.Write produces only a few KB of KIF text in
+//       microseconds — the probability of a GC firing inside the
+//       call is vanishingly small.
+//
+// Both (a) and (b) are pragmatic, not contractual. If a future change
+// makes the call asynchronous, multi-threaded, or routes through code
+// that allocates aggressively, switch to allocating a real managed
+// KIFWriteOptions via il2cpp_object_new (so its fields are
+// GC-traced), or root the strings explicitly with
+// il2cpp_gchandle_new(..., /*pinned=*/false) for the duration of the
+// call and release afterwards.
 void *il2cpp_str_new(const char *utf8);
 
 // Fill the five string/value KIFWriteOptions fields on `opts` (a buffer

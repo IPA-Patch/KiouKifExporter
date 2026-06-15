@@ -180,6 +180,13 @@ DEFINE_OPM_HOOK(replay,    "RecordReplayMode", g_recordReplayModeCache,
 //
 // We do NOT clear g_gameCtrlCache here — the next match's InitializeAsync
 // will overwrite it, and it's cheap to leave stale.
+//
+// We DO clear g_matchConfigCache, because the writer fills KIF player /
+// time-rule fields off it: if a subsequent match somehow starts without
+// the InitializeAsync hook firing (e.g. a mode-switch the hook didn't
+// know to instrument, an in-app retry path that bypasses the prologue
+// we patched, …) the cache must not silently bleed the previous match's
+// player names into the new KIF. Better-blank-than-wrong.
 // ---------------------------------------------------------------------------
 #define DEFINE_END_HOOK(MODE_LOWER, MODE_TAG, CACHE_VAR, ORIG_VAR)                     \
     static UniTaskRet hook_##MODE_LOWER##_End(void *self, void *ct) {                  \
@@ -196,6 +203,7 @@ DEFINE_OPM_HOOK(replay,    "RecordReplayMode", g_recordReplayModeCache,
                       @"[KIF] " MODE_TAG " emitted -> %@", path]);                     \
         }                                                                              \
         (CACHE_VAR) = NULL;                                                            \
+        g_matchConfigCache = NULL;                                                     \
         if (ORIG_VAR) return (ORIG_VAR)(self, ct);                                     \
         return (UniTaskRet){ NULL, NULL };                                             \
     }
