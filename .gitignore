@@ -284,6 +284,13 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# The generic `lib/` rule above is meant for Python build outputs; the
+# vendored Dobby static library lives under vendor/dobby/lib/ and must
+# ship with the repo so jailed / binpatch builds (CI and local) can
+# link it without an extra fetch step.
+!vendor/dobby/lib/
+!vendor/dobby/lib/libdobby.a
+
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
