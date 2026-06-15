@@ -39,8 +39,12 @@ jobs:
         with:
           bun-version: latest
       - name: Install commitlint
+        # `.commitlintrc.yaml` extends `@commitlint/config-conventional`,
+        # so we install that package directly rather than only the
+        # transitive `conventional-changelog-conventionalcommits`.
         run: |
           bun install conventional-changelog-conventionalcommits
+          bun install @commitlint/config-conventional
           bun install commitlint@latest
       - name: Validate current commit (last commit) with commitlint
         if: github.event_name == 'push'
