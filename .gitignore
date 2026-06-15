@@ -468,3 +468,12 @@ packages/
 # samples). These are useful for debugging but are not source. Distinct
 # from the Node `logs` glob above so the intent stays explicit.
 logs/
+
+# Build / analysis input assets. The clean decrypted .ipa goes here
+# (Makefile's KIOU_CLEAN_IPA default), and the il2cpp dump.cs +
+# its index file land here too. None of these are source — they're
+# heavy binary / machine-generated artifacts each developer must drop
+# in by hand.
+assets/dump.cs
+assets/dump.cs.index.json
+# *.ipa already ignored globally above.
