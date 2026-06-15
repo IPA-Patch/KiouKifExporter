@@ -50,8 +50,12 @@ jobs:
         if: github.event_name == 'push'
         run: bunx commitlint --last --verbose
       - name: Validate PR commits with commitlint
+        # Range against the PR's base SHA, not `head.sha~<commits>`. The
+        # latter assumes a linear history and that the local clone has
+        # that many parents, which breaks on PRs containing merge commits
+        # or that were rebased after the count was taken. See #14.
         if: github.event_name == 'pull_request'
-        run: bunx commitlint --from ${{ github.event.pull_request.head.sha }}~${{ github.event.pull_request.commits }} --to ${{ github.event.pull_request.head.sha }} --verbose
+        run: bunx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }} --verbose
   build:
     name: Build (${{ matrix.flavor }})
     runs-on: ubuntu-latest
