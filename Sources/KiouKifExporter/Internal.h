@@ -22,11 +22,17 @@
 //      ~/Documents/KiouKifExporter/<ISO8601>_<mode>_<startpos>.kif.
 //   3. That's it. No WebSocket, no HTTP, no inject side.
 //
-// Read-only contract: this tweak does NOT mutate il2cpp memory. The shared
-// header kiou_il2cpp.h is intentionally read-only, and we do not add any
-// write helpers here. If a future phase needs to fill KIFWriteOptions
-// fields for time-stamped KIF output, those write helpers go in this header
-// behind an explicit opt-in.
+// Read-only contract for IL2CPP HEAP: this tweak does NOT mutate live
+// il2cpp objects. The shared header il2cpp.h (IPA-Patch/Common) is
+// intentionally read-only.
+//
+// EXCEPTION: KIFWriteOptions. The KIF export path allocates its OWN
+// KIFWriteOptions instance via a raw zero buffer (Helpers.m) and then
+// fills five string/value fields directly. Those write helpers
+// (il2cpp_str_new + the field map below) live here, in the consumer
+// tweak's Internal.h, because they are *only* safe against private
+// buffers we created — not against live il2cpp objects on the heap.
+// Do not lift them into IPA-Patch/Common without that contract attached.
 // ===========================================================================
 
 #ifndef KIOU_KIF_EXPORTER_COMMIT
@@ -134,6 +140,16 @@ extern uintptr_t g_unityBase;
 // ---------------------------------------------------------------------------
 extern void *volatile g_gameCtrlCache;        // Project.ShogiCore.GameController*
 
+// Live MatchConfig captured by Hook_MatchModeObserve.m::DEFINE_INIT_HOOK
+// (Tweak path) so the match-end KIF writer can read BlackPlayer/WhitePlayer/
+// TimeControl off it. The Patched path does NOT use this cache — it pulls
+// MatchConfig out of the IMatchMode instance directly when the concrete
+// subclass holds it as a field (only OnlinePvPMode does on KIOU 1.0.1
+// build 11; the other four pass cfg through InitializeAsync but never
+// latch it, so for those modes MatchConfig is NULL and player-name /
+// time-rule fields stay empty by design).
+extern void *volatile g_matchConfigCache;     // Project.Game.Logic.MatchConfig*
+
 // MatchMode self caches captured by Hook_MatchModeObserve.m. Populated from
 // InitializeAsync (early) and confirmed by each OnPlayerMoveAsync hit.
 // Cleared from OnMatchEndAsync. KifExporter doesn't actually need these
@@ -169,7 +185,12 @@ typedef struct { void *r0; void *r1; } UniTaskRet;
 // Returns the absolute path of the file we wrote (autoreleased), or nil
 // on any failure. Failures are logged but do not throw.
 // ---------------------------------------------------------------------------
-NSString *kif_writer_emit_for_match_end(void *gameCtrl, const char *matchModeTag);
+// matchConfig may be NULL — fields that need it (player names, time rule)
+// are simply left empty in that case. See g_matchConfigCache in this header
+// for which modes populate it.
+NSString *kif_writer_emit_for_match_end(void *gameCtrl,
+                                        void *matchConfig,
+                                        const char *matchModeTag);
 
 // ---------------------------------------------------------------------------
 // hook_OnMatchEndAsync — the Patched-build entry point for OnMatchEndAsync.
@@ -223,11 +244,18 @@ NSString *kif_sanitize_filename_segment(NSString *s, NSUInteger maxChars);
 NSString *kif_ensure_output_dir(void);
 
 // ---------------------------------------------------------------------------
-// Read the full game-record text via GameController.GetKifuText. Returns
-// nil on any failure. Implementation in Helpers.m (resolves the
-// NativeFunction once and caches the pointer).
+// Run the full GetUSIText → ParseUSI → KIFWriteOptions..ctor →
+// kif_fill_write_options → KIFWriter.Write pipeline and return the
+// resulting KIF 2.0 string. Returns nil on any failure.
+//
+// `matchConfig` and `matchModeTag` flow straight through to
+// kif_fill_write_options — see Helpers.m for the per-field semantics.
+// matchConfig may be NULL; matchModeTag may be NULL (then "unknown"
+// shows up in MatchTitle).
 // ---------------------------------------------------------------------------
-NSString *kifTextFromGameController(void *gameCtrl);
+NSString *kifTextFromGameController(void *gameCtrl,
+                                    void *matchConfig,
+                                    const char *matchModeTag);
 
 // Read the first segment of the start position from GameController for use
 // as the {startpos} filename slot. Picks one of:
@@ -236,3 +264,51 @@ NSString *kifTextFromGameController(void *gameCtrl);
 //   "unknown"      — couldn't read anything
 // Implementation in Helpers.m.
 NSString *kif_describe_startpos(void *gameCtrl);
+
+// ---------------------------------------------------------------------------
+// KIFWriteOptions field-fill helpers.
+//
+// kifTextFromGameController() in Helpers.m walks a private zero-init buffer
+// that .ctor() has touched (no klass header). Setters would still work but
+// would do a full il2cpp write-barrier round-trip; since the buffer is
+// not on the il2cpp heap and `KIFWriter.Write` only reads through non-
+// virtual auto-property getters, direct field stores are equivalent and
+// cheaper. We use them.
+//
+// Field map (KIOU 1.0.1 build 11, see KIFWriteOptions in dump.cs):
+//   0x10  string             BlackPlayerName
+//   0x18  string             WhitePlayerName
+//   0x20  Nullable<DateTime> StartDateTime  (16 bytes: bool hasValue +
+//                                            padding + DateTime _dateData)
+//   0x30  string             MatchTitle
+//   0x38  string             TimeRuleLabel
+//   0x40  IReadOnlyList<long> ThinkingTimesMicros — left NULL intentionally
+//   0x48  string             EndingLabel
+#define KIFOPTS_OFF_BLACK_PLAYER_NAME 0x10
+#define KIFOPTS_OFF_WHITE_PLAYER_NAME 0x18
+#define KIFOPTS_OFF_START_DATETIME    0x20
+#define KIFOPTS_OFF_MATCH_TITLE       0x30
+#define KIFOPTS_OFF_TIME_RULE_LABEL   0x38
+#define KIFOPTS_OFF_ENDING_LABEL      0x48
+
+// Allocate (or look up the cached pointer for) an il2cpp System.String*
+// for the given UTF-8 C string. Returns NULL if `il2cpp_string_new` is
+// unresolvable via dlsym or if `utf8` is NULL/empty. The returned pointer
+// is owned by the il2cpp runtime; do NOT free it. We never retain the
+// pointer past the synchronous KIFWriter.Write call so a GC sweep won't
+// invalidate it under us.
+void *il2cpp_str_new(const char *utf8);
+
+// Fill the five string/value KIFWriteOptions fields on `opts` (a buffer
+// produced by KIFWriteOptions..ctor() — see Helpers.m). Reads everything
+// it needs out of `matchConfig` (may be NULL — then BlackPlayerName /
+// WhitePlayerName / TimeRuleLabel are left untouched) and `gameCtrl`
+// (used for the EndingLabel — WinReason enum at GameController +0x30).
+// `matchModeTag` is the static C string used to build MatchTitle.
+//
+// Never throws — every internal failure falls back to leaving the
+// specific field unset.
+void kif_fill_write_options(void *opts,
+                            void *matchConfig,
+                            void *gameCtrl,
+                            const char *matchModeTag);
