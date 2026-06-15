@@ -57,6 +57,7 @@
 // declarations live in Internal.h.
 // ---------------------------------------------------------------------------
 void *volatile g_gameCtrlCache         = NULL;
+void *volatile g_matchConfigCache      = NULL;
 void *volatile g_aiMatchModeCache      = NULL;
 void *volatile g_cpuStreamModeCache    = NULL;
 void *volatile g_onlineModeCache       = NULL;
@@ -117,13 +118,14 @@ static inline BOOL shouldLog(uint32_t n) {
                                                void *store, void *adapter,             \
                                                void *ct) {                             \
         if ((CACHE_VAR) != self) (CACHE_VAR) = self;                                   \
+        if (cfg && g_matchConfigCache != cfg) g_matchConfigCache = cfg;                \
         if (adapter) {                                                                 \
             void *gc = readPtr(adapter, ADAPTER_OFF_GAME_CONTROLLER);                  \
             if (gc && g_gameCtrlCache != gc) g_gameCtrlCache = gc;                     \
         }                                                                              \
         file_log([NSString stringWithFormat:                                           \
-                  @"[MMODE] " MODE_TAG " Init self=%p adapter=%p gameCtrl=%p",         \
-                  self, adapter, g_gameCtrlCache]);                                    \
+                  @"[MMODE] " MODE_TAG " Init self=%p cfg=%p adapter=%p gameCtrl=%p",  \
+                  self, cfg, adapter, g_gameCtrlCache]);                               \
         if (ORIG_VAR) return (ORIG_VAR)(self, cfg, store, adapter, ct);                \
         return (UniTaskRet){ NULL, NULL };                                             \
     }
@@ -182,11 +184,12 @@ DEFINE_OPM_HOOK(replay,    "RecordReplayMode", g_recordReplayModeCache,
 #define DEFINE_END_HOOK(MODE_LOWER, MODE_TAG, CACHE_VAR, ORIG_VAR)                     \
     static UniTaskRet hook_##MODE_LOWER##_End(void *self, void *ct) {                  \
         file_log([NSString stringWithFormat:                                           \
-                  @"[MMODE] " MODE_TAG " End self=%p gameCtrl=%p",                     \
-                  self, g_gameCtrlCache]);                                             \
+                  @"[MMODE] " MODE_TAG " End self=%p gameCtrl=%p cfg=%p",              \
+                  self, g_gameCtrlCache, g_matchConfigCache]);                         \
         /* Emit the KIF *before* chaining — the cached GameController may */           \
         /* be torn down by the time the original returns. */                           \
         NSString *path = kif_writer_emit_for_match_end(g_gameCtrlCache,                \
+                                                       g_matchConfigCache,             \
                                                        MODE_TAG);                       \
         if (path) {                                                                    \
             file_log([NSString stringWithFormat:                                       \
