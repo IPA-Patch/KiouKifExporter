@@ -1,6 +1,5 @@
 #import "Internal.h"
-#import <mach-o/dyld.h>
-#import <string.h>
+#import "binpatch.h"
 
 // ===========================================================================
 // KiouKifExporter — entry point.
@@ -55,28 +54,19 @@ static void publish_binpatch_hook(uintptr_t unityBase) {
 static void installUnityHooks(void) {
     if (g_unityHooked) return;
 
-    uint32_t imgCount = _dyld_image_count();
-    uintptr_t unityBase = 0;
-    const char *unityName = NULL;
-    for (uint32_t i = 0; i < imgCount; i++) {
-        const char *name = _dyld_get_image_name(i);
-        if (name && strstr(name, "UnityFramework")) {
-            unityBase = (uintptr_t)_dyld_get_image_header(i);
-            unityName = name;
-            break;
-        }
-    }
-
+    // Locate UnityFramework via IPA-Patch/Common's generic dyld walker.
+    // Returns 0 until UnityFramework is mapped — installUnityHooks is
+    // called from a retry loop that takes care of the wait.
+    uintptr_t unityBase = ipa_binpatch_find_image("UnityFramework");
     if (unityBase == 0) {
-        // Not loaded yet — retry will call us again.
         return;
     }
 
     g_unityBase = unityBase;
 
     file_log([NSString stringWithFormat:
-              @"UnityFramework base=0x%lx (%s)",
-              (unsigned long)unityBase, unityName ? unityName : "?"]);
+              @"UnityFramework base=0x%lx",
+              (unsigned long)unityBase]);
 
     // Make sure the output directory is ready before the first match ends.
     // If this fails, kif_writer_emit_for_match_end will retry — but doing
