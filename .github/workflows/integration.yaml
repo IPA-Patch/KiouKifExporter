@@ -1,16 +1,16 @@
 name: integration
 
 # CI: build both the rootless .deb (MobileSubstrate path) and the jailed
-# .dylib (Dobby-static path) on every push to main / develop and on
+# .dylib (Dobby-static path) on every push to master / develop and on
 # every PR targeting either. Fails fast if the dylib accidentally picks
 # up an external hook-engine dependency, since that would brick
 # Sideloadly installs.
 
 on:
   push:
-    branches: [main, develop]
+    branches: [master, develop]
   pull_request:
-    branches: [main, develop]
+    branches: [master, develop]
   workflow_dispatch:
 
 concurrency:
@@ -22,8 +22,38 @@ env:
   IOS_SDK_VERSION: "16.5"
 
 jobs:
+  commitlint:
+    name: Commit Lint
+    if: github.event.action != 'closed' || github.event.pull_request.merged != true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          # commitlint needs to walk back `pull_request.commits` commits to
+          # cover every PR commit individually, so the default shallow
+          # clone (`fetch-depth: 1`) can't resolve `HEAD~N`.
+          fetch-depth: 0
+      - name: Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install commitlint
+        # `.commitlintrc.yaml` extends `@commitlint/config-conventional`,
+        # so we install that package directly rather than only the
+        # transitive `conventional-changelog-conventionalcommits`.
+        run: |
+          bun install conventional-changelog-conventionalcommits
+          bun install @commitlint/config-conventional
+          bun install commitlint@latest
+      - name: Validate current commit (last commit) with commitlint
+        if: github.event_name == 'push'
+        run: bunx commitlint --last --verbose
+      - name: Validate PR commits with commitlint
+        if: github.event_name == 'pull_request'
+        run: bunx commitlint --from ${{ github.event.pull_request.head.sha }}~${{ github.event.pull_request.commits }} --to ${{ github.event.pull_request.head.sha }} --verbose
   build:
-    name: build (${{ matrix.flavor }})
+    name: Build (${{ matrix.flavor }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -40,7 +70,7 @@ jobs:
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # Sources/Common + shared/ are git submodules referenced by
           # the Makefile (Sources/Common/logging.m, Sources/Common/binpatch.m,
@@ -114,7 +144,7 @@ jobs:
           test -x "$THEOS/toolchain/linux/iphone/bin/clang"
           "$THEOS/toolchain/linux/iphone/bin/clang" --version
 
-      - name: Build (${{ matrix.flavor }})
+      - name: Run build
         run: |
           make clean
           make ${{ matrix.make_args }}
