@@ -33,6 +33,24 @@ KiouKifExporter_FRAMEWORKS = Foundation
 # self-contained. _shared/kiou_hookengine.h picks between MSHookFunction
 # and DobbyHook at compile time.
 # ---------------------------------------------------------------------------
+# Phase 1.5 binary-patch distribution implies the jailed link shape:
+# the dylib gets injected via LC_LOAD_DYLIB into a statically-patched
+# UnityFramework on iOS 18, so it must NOT depend on libsubstrate. The
+# hookengine shim still resolves to Dobby (statically linked from the
+# vendor tree) — even though the binpatch codepath never actually invokes
+# DobbyHook at runtime, keeping the link shape identical to `jailed::`
+# means the existing hookengine include + the Hook_*.m TU compile cleanly
+# and the dylib has zero external hook-engine dependency.
+ifeq ($(BINPATCH),1)
+    JAILED := 1
+    KiouKifExporter_CFLAGS  += -DKIOU_BINPATCH=1
+    # On iOS 18 / non-jailbreak the sandbox tmp/ is invisible from the
+    # host's perspective (no SSH, no Filza). Push the file log into
+    # Documents/ instead so operators can read it through Files.app once
+    # the patched bundle has UIFileSharingEnabled set.
+    KiouKifExporter_CFLAGS  += -DKIOU_LOG_TO_DOCUMENTS=1
+endif
+
 ifeq ($(JAILED),1)
     KiouKifExporter_CFLAGS  += -DKIOU_JAILED=1 -Ivendor/dobby/include
     KiouKifExporter_LDFLAGS  = -Lvendor/dobby/lib -ldobby -lc++ -lc++abi
@@ -58,3 +76,42 @@ jailed::
 	@$(THEOS)/toolchain/linux/iphone/bin/otool -L packages/jailed/KiouKifExporter.dylib 2>/dev/null \
 	  || otool -L packages/jailed/KiouKifExporter.dylib 2>/dev/null \
 	  || echo "(otool unavailable on host; inspect the dylib on a Mac/iOS device)"
+
+# binpatch distribution: same link shape as `jailed::` (Dobby statically
+# linked, no libsubstrate) but with -DKIOU_BINPATCH=1 so the constructor
+# publishes the hook pointer into UnityFramework's reserved __DATA slot
+# instead of trying to MSHookFunction/DobbyHook into __TEXT. This is the
+# only build mode that survives iOS 18's Code Signing Monitor. Drops the
+# artifact into packages/binpatch/ for the patched-IPA pipeline.
+binpatch::
+	$(MAKE) BINPATCH=1 clean
+	$(MAKE) BINPATCH=1 all
+	$(ECHO_NOTHING)mkdir -p packages/binpatch$(ECHO_END)
+	$(ECHO_NOTHING)cp $(THEOS_OBJ_DIR)/KiouKifExporter.dylib packages/binpatch/KiouKifExporter.dylib$(ECHO_END)
+	@echo "binpatch dylib -> packages/binpatch/KiouKifExporter.dylib"
+	@echo "--- otool -L (must NOT list libsubstrate or libdobby) ---"
+	@$(THEOS)/toolchain/linux/iphone/bin/otool -L packages/binpatch/KiouKifExporter.dylib 2>/dev/null \
+	  || otool -L packages/binpatch/KiouKifExporter.dylib 2>/dev/null \
+	  || echo "(otool unavailable on host; inspect the dylib on a Mac/iOS device)"
+
+# Full patched-IPA pipeline (Phase 1.5 distribution unit).
+#
+# Builds the binpatch dylib (if missing) and assembles a TrollStore /
+# Sideloadly-ready IPA. The user must point at a decrypted clean KIOU
+# IPA via the KIOU_CLEAN_IPA variable (defaults to the repo's local
+# copy under assets/ if present); the script extracts it, runs
+# patch_unity.py against UnityFramework, runs patch_info_plist.py against
+# Info.plist, drops the dylib next to UnityFramework, and re-zips into
+# packages/ipa/KiouKifExporter-binpatch.ipa.
+#
+# This target NEVER redistributes a clean KIOU IPA — you supply your own.
+KIOU_CLEAN_IPA ?= /home/vscode/app/assets/Kiou-1.0.1.ipa
+
+ipa:: binpatch
+	@echo "==> assembling patched IPA from $(KIOU_CLEAN_IPA)"
+	@if [ ! -f "$(KIOU_CLEAN_IPA)" ]; then \
+	  echo "error: clean KIOU IPA missing at $(KIOU_CLEAN_IPA)"; \
+	  echo "       override with: make ipa KIOU_CLEAN_IPA=/path/to/clean.ipa"; \
+	  exit 1; \
+	fi
+	@./tools/build_patched_ipa.sh "$(KIOU_CLEAN_IPA)"

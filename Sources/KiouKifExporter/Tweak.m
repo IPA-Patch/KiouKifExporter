@@ -22,6 +22,36 @@ static BOOL g_unityHooked = NO;
 // re-walking dyld.
 uintptr_t g_unityBase = 0;
 
+#ifdef KIOU_BINPATCH
+// ---------------------------------------------------------------------------
+// publish_binpatch_hook — KIOU_BINPATCH=1 entry-publication helper.
+//
+// In binpatch mode we don't install any runtime hooks (Dobby / MSHook are
+// fatal under iOS 18's Code Signing Monitor — see
+// docs/plans/kiou_kif_exporter_binpatch.md). Instead, UnityFramework has
+// already been statically patched so that each OnMatchEndAsync prologue
+// branches into a cave that loads a function pointer out of a reserved
+// 8-byte slot in __DATA,__bss at unityBase + KIOU_HOOK_SLOT_RVA. We just
+// have to put our hook function's address there.
+//
+// __DATA writes don't trip CSM (the kernel only validates __TEXT page
+// hashes), so this is the safe primitive for iOS 18 untethered.
+// ---------------------------------------------------------------------------
+static void publish_binpatch_hook(uintptr_t unityBase) {
+    g_unityBase = unityBase;
+
+    void **slot = (void **)(unityBase + (uintptr_t)KIOU_HOOK_SLOT_RVA);
+    *slot = (void *)&kif_binpatch_OnMatchEndAsync;
+
+    file_log([NSString stringWithFormat:
+              @"[BINPATCH] published &kif_binpatch_OnMatchEndAsync=%p "
+              @"-> slot=%p (unityBase=0x%lx + rva=0x%lx)",
+              (void *)&kif_binpatch_OnMatchEndAsync, (void *)slot,
+              (unsigned long)unityBase,
+              (unsigned long)KIOU_HOOK_SLOT_RVA]);
+}
+#endif
+
 static void installUnityHooks(void) {
     if (g_unityHooked) return;
 
@@ -55,7 +85,18 @@ static void installUnityHooks(void) {
     file_log([NSString stringWithFormat:
               @"output dir = %@", outDir ?: @"(failed)"]);
 
+#ifndef KIOU_BINPATCH
+    // Runtime-hook install path (Phase 1 / jailbroken builds). Uses
+    // MSHookFunction or Dobby under the hood — both rely on mprotect +
+    // memcpy into __TEXT, which iOS 18 CSM kills on contact. That's
+    // exactly why the KIOU_BINPATCH path below exists.
     install_MatchModeObserve_hook(unityBase);
+#else
+    // iOS 18 binpatch path: UnityFramework's prologues are already
+    // rewritten to branch into a cave; we only publish our hook function
+    // pointer into the __DATA slot the patched cave reads from.
+    publish_binpatch_hook(unityBase);
+#endif
 
     g_unityHooked = YES;
     file_log(@"=== KiouKifExporter: all hooks installed ===");
