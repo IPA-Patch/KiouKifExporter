@@ -41,13 +41,31 @@ jobs:
         with:
           ref: ${{ steps.tag.outputs.value }}
           fetch-depth: 0
+          # Sources/Common + shared/ are git submodules referenced by
+          # the Makefile (Sources/Common/logging.m, Sources/Common/binpatch.m,
+          # shared/tools/build_patched_ipa.sh). Without recursive checkout
+          # the Theos build fails with "file not found".
+          submodules: recursive
 
       - name: Install host build tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              build-essential curl git make perl ldid xz-utils \
+              build-essential curl git make perl xz-utils \
               libplist-utils libc++-dev
+
+      - name: Install ldid
+        # `ldid` isn't packaged for Ubuntu noble (24.04). Grab the
+        # ProcursusTeam fork's prebuilt Linux x86_64 binary, the same
+        # way Theos's own docs recommend. Pin the version so a quiet
+        # upstream rotation doesn't break a release build without an
+        # explicit bump here.
+        run: |
+          LDID_VERSION="v2.1.5-procursus7"
+          curl -L -o /tmp/ldid \
+              "https://github.com/ProcursusTeam/ldid/releases/download/${LDID_VERSION}/ldid_linux_x86_64"
+          sudo install -m 0755 /tmp/ldid /usr/local/bin/ldid
+          ldid -V || ldid 2>&1 | head -1 || true
 
       - name: Cache Theos
         id: theos-cache
