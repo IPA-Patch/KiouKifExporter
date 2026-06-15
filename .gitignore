@@ -15,3 +15,13 @@ packages/
 # Local SSH / device IP overrides (THEOS_DEVICE_IP etc)
 .env
 .env.local
+
+# On-device test artifacts dropped by the operator (crash reports from
+# iPhone "Analytics Data", run logs out of the sandbox, captured .kif
+# samples). These are useful for debugging but are not source.
+logs/
+
+# Python tooling caches
+tools/__pycache__/
+__pycache__/
+*.pyc
