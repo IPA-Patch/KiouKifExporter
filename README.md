@@ -116,48 +116,31 @@ in the repository root.
 ## How it works
 
 ```mermaid
-%%{init: {
-  "theme": "base",
-  "themeVariables": {
-    "primaryColor": "#1f2937",
-    "primaryTextColor": "#f3f4f6",
-    "primaryBorderColor": "#60a5fa",
-    "lineColor": "#9ca3af",
-    "secondaryColor": "#0f172a",
-    "tertiaryColor": "#0f172a",
-    "clusterBkg": "#0f172a",
-    "clusterBorder": "#60a5fa",
-    "edgeLabelBackground": "#0f172a",
-    "fontFamily": "system-ui, sans-serif"
-  }
-}}%%
 flowchart TD
-    subgraph KIOU["KIOU app process · UnityFramework (il2cpp)"]
-        init["IMatchMode.InitializeAsync"]
-        opm["IMatchMode.OnPlayerMoveAsync"]
-        endHook["IMatchMode.OnMatchEndAsync"]
-        cache(["g_gameCtrlCache · GameController*"])
+    init["IMatchMode.InitializeAsync"]
+    opm["IMatchMode.OnPlayerMoveAsync"]
+    endHook["IMatchMode.OnMatchEndAsync"]
+    cache(["g_gameCtrlCache &middot; GameController*"])
 
-        init -- "latch from adapter arg" --> cache
-        opm  -- "refresh (backup latch)"  --> cache
+    init -- "latch from adapter arg" --> cache
+    opm  -- "refresh (backup latch)"  --> cache
 
-        endHook --> writer["kif_writer_emit_for_match_end()"]
-        cache  --> writer
+    endHook --> writer["kif_writer_emit_for_match_end()"]
+    cache  --> writer
 
-        writer --> usiText["GameController.GetUSIText"]
-        usiText --> usiStr(["position startpos moves &hellip;"])
-        usiStr --> parse["USIParser.ParseUSI(string)"]
-        parse --> record(["RecordManager*"])
+    writer --> usiText["GameController.GetUSIText"]
+    usiText --> usiStr(["position startpos moves &hellip;"])
+    usiStr --> parse["USIParser.ParseUSI(string)"]
+    parse --> record(["RecordManager*"])
 
-        record --> kifwrite["KIFWriter.Write(record, opts)"]
-        opts(["KIFWriteOptions* · 0x60 raw NSMutableData<br/>+ .ctor() — all fields null"]) --> kifwrite
+    record --> kifwrite["KIFWriter.Write(record, opts)"]
+    opts(["KIFWriteOptions* &middot; 0x60 raw NSMutableData<br/>+ .ctor() &mdash; all fields null"]) --> kifwrite
 
-        kifwrite --> kif(["KIF 2.0 string"])
-    end
+    kifwrite --> kif(["KIF 2.0 string"])
 
     kif --> file[("&lt;sandbox&gt;/Documents/KiouKifExporter/<br/>{ISO8601}_{mode}_{startpos}.kif")]
     file --> files["Files.app"]
-    files --> sinks["AirDrop · PiyoShogi · Shogi Browser Q · iCloud Drive"]
+    files --> sinks["AirDrop &middot; PiyoShogi &middot; Shogi Browser Q &middot; iCloud Drive"]
 ```
 
 Five concrete `IMatchMode` implementations are hooked, three lifecycle
