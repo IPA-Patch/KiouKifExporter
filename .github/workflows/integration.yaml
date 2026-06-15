@@ -29,6 +29,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # commitlint needs to walk back `pull_request.commits` commits to
+          # cover every PR commit individually, so the default shallow
+          # clone (`fetch-depth: 1`) can't resolve `HEAD~N`.
+          fetch-depth: 0
       - name: Bun
         uses: oven-sh/setup-bun@v2
         with:
