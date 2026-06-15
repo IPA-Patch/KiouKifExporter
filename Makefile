@@ -97,15 +97,15 @@ binpatch::
 # Full patched-IPA pipeline (Phase 1.5 distribution unit).
 #
 # Builds the binpatch dylib (if missing) and assembles a TrollStore /
-# Sideloadly-ready IPA. The user must point at a decrypted clean KIOU
-# IPA via the KIOU_CLEAN_IPA variable (defaults to the repo's local
-# copy under assets/ if present); the script extracts it, runs
-# patch_unity.py against UnityFramework, runs patch_info_plist.py against
-# Info.plist, drops the dylib next to UnityFramework, and re-zips into
-# packages/ipa/KiouKifExporter-binpatch.ipa.
+# Sideloadly-ready IPA. The user supplies a decrypted clean KIOU IPA via
+# KIOU_CLEAN_IPA; tools/build_patched_ipa.sh is target-agnostic and
+# driven by the KIOU-specific tools/recipes/kioukifexporter.py recipe.
 #
-# This target NEVER redistributes a clean KIOU IPA — you supply your own.
+# This target NEVER redistributes a clean KIOU IPA — supply your own.
 KIOU_CLEAN_IPA ?= /home/vscode/app/assets/Kiou-1.0.1.ipa
+KIOU_IPA_RECIPE    := kioukifexporter
+KIOU_IPA_FRAMEWORK := UnityFramework
+KIOU_IPA_DYLIB     := $(PWD)/packages/binpatch/KiouKifExporter.dylib
 
 ipa:: binpatch
 	@echo "==> assembling patched IPA from $(KIOU_CLEAN_IPA)"
@@ -114,4 +114,8 @@ ipa:: binpatch
 	  echo "       override with: make ipa KIOU_CLEAN_IPA=/path/to/clean.ipa"; \
 	  exit 1; \
 	fi
-	@./tools/build_patched_ipa.sh "$(KIOU_CLEAN_IPA)"
+	@./tools/build_patched_ipa.sh \
+	  --recipe    "$(KIOU_IPA_RECIPE)" \
+	  --framework "$(KIOU_IPA_FRAMEWORK)" \
+	  --dylib     "$(KIOU_IPA_DYLIB)" \
+	  --input     "$(KIOU_CLEAN_IPA)"
