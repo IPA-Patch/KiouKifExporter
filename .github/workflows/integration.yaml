@@ -1,0 +1,122 @@
+name: integration
+
+# CI: build both the rootless .deb (MobileSubstrate path) and the jailed
+# .dylib (Dobby-static path) on every push to main and on every PR.
+# Fails fast if the dylib accidentally picks up an external hook-engine
+# dependency, since that would brick Sideloadly installs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  THEOS: ${{ github.workspace }}/theos
+  IOS_SDK_VERSION: "16.5"
+
+jobs:
+  build:
+    name: build (${{ matrix.flavor }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: substrate
+            make_args: ""
+            artifact_name: kioukifexporter-substrate-deb
+            artifact_path: packages/*.deb
+          - flavor: jailed
+            make_args: "jailed"
+            artifact_name: kioukifexporter-jailed-dylib
+            artifact_path: packages/jailed/KiouKifExporter.dylib
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential curl git make perl ldid xz-utils \
+              libplist-utils libc++-dev
+
+      - name: Cache Theos
+        id: theos-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            theos
+          key: theos-linux-${{ env.IOS_SDK_VERSION }}-v1
+
+      - name: Install Theos
+        if: steps.theos-cache.outputs.cache-hit != 'true'
+        run: |
+          # Theos bootstrap. Pin to upstream main; the official installer
+          # already handles toolchain + SDK download.
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+
+          # Linux toolchain (Sam Bingner's iOS arm64 cross toolchain).
+          mkdir -p "$THEOS/toolchain"
+          curl -L -o /tmp/toolchain.tar.xz \
+              "https://github.com/sbingner/llvm-project/releases/download/v10.0.0-1/linux-ios-arm64e-clang-toolchain.tar.lzma"
+          tar -xf /tmp/toolchain.tar.xz -C "$THEOS/toolchain"
+          mv "$THEOS/toolchain/linux" "$THEOS/toolchain/linux2" || true
+
+          # iOS SDK matching IOS_SDK_VERSION.
+          mkdir -p "$THEOS/sdks"
+          curl -L -o /tmp/sdk.tar.xz \
+              "https://github.com/theos/sdks/archive/master.tar.gz"
+          tar -xf /tmp/sdk.tar.xz -C /tmp
+          cp -R "/tmp/sdks-master/iPhoneOS${IOS_SDK_VERSION}.sdk" \
+                "$THEOS/sdks/"
+
+      - name: Verify Theos
+        run: |
+          ls "$THEOS"
+          ls "$THEOS/sdks"
+          test -d "$THEOS/sdks/iPhoneOS${IOS_SDK_VERSION}.sdk"
+
+      - name: Build (${{ matrix.flavor }})
+        run: |
+          make clean
+          make ${{ matrix.make_args }}
+
+      - name: Stage rootless .deb
+        if: matrix.flavor == 'substrate'
+        run: |
+          make package
+          ls -la packages/
+
+      - name: Sanity check jailed dylib (no external hook engine)
+        if: matrix.flavor == 'jailed'
+        run: |
+          DYLIB=packages/jailed/KiouKifExporter.dylib
+          test -f "$DYLIB"
+          # otool may be unavailable on Linux; fall back to nm-style scan.
+          if command -v otool >/dev/null 2>&1; then
+              otool -L "$DYLIB"
+              if otool -L "$DYLIB" | grep -E "libsubstrate|libdobby"; then
+                  echo "::error::Jailed dylib leaks an external hook-engine dependency"
+                  exit 1
+              fi
+          else
+              strings "$DYLIB" | grep -E "libsubstrate|libdobby\.dylib" \
+                  && { echo "::error::Jailed dylib leaks an external hook-engine dependency"; exit 1; } \
+                  || echo "no external hook-engine references found"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
+          retention-days: 14
