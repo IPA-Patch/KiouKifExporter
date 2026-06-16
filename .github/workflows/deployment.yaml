@@ -106,15 +106,22 @@ jobs:
           test -x "$THEOS/toolchain/linux/iphone/bin/clang"
           "$THEOS/toolchain/linux/iphone/bin/clang" --version
 
+      # FINALPACKAGE=1 — Theos release-mode switch. Without it Theos
+      # builds at -O0 with debug symbols and stamps "+debug" into the
+      # .deb file name (e.g. *_0.1.0-1+debug_iphoneos-arm64.deb), which
+      # is fine locally but not what a tagged Release should ship. Each
+      # of the three make invocations below passes it so every CD
+      # artifact is built in release shape: -O3, stripped debug
+      # symbols, no "+debug" suffix on the .deb.
       - name: Build rootless .deb (MobileSubstrate)
         run: |
           make clean
-          make package
+          make package FINALPACKAGE=1
           ls -la packages/
 
       - name: Build jailed .dylib (Dobby static)
         run: |
-          make jailed
+          make jailed FINALPACKAGE=1
           ls -la packages/jailed/
 
       - name: Build binpatch .dylib (static-patch slot publisher)
@@ -125,7 +132,7 @@ jobs:
         # pointers into a reserved __DATA slot instead of inline-hooking
         # __TEXT — the only mode that survives iOS 18's CSM.
         run: |
-          make binpatch
+          make binpatch FINALPACKAGE=1
           ls -la packages/binpatch/
 
       - name: Sanity check jailed + binpatch dylibs (no external hook engine)
@@ -156,18 +163,26 @@ jobs:
         # the decrypted KIOU UnityFramework the operator supplied.
         # Users wanting the patched IPA pair the binpatch dylib with
         # `make ipa DECRYPTED_IPA=...` on their own host.
+        #
+        # Dylib names mirror the Theos .deb name shape:
+        #   work.tkgstrator.kioukifexporter_<ver>-1_iphoneos-arm64-<flavor>.dylib
+        # so all three artifacts ship under the same bundle-id /
+        # version / arch prefix and only differ in the trailing flavor
+        # tag (jailed / binpatch). Grep-friendly and unambiguous.
         run: |
           mkdir -p dist
           # Versioned .deb file name copied verbatim out of packages/.
           cp packages/*.deb dist/
-          # Rename the dylibs to include the tag so Releases makes it
-          # obvious which build a user is grabbing.
-          TAG="${{ steps.tag.outputs.value }}"
-          VER="${TAG#v}"
+          # Derive the dylib filename stem from the .deb itself, not
+          # from ./control. This way the dylibs track whatever shape
+          # Theos chose (including the package revision, any future
+          # rename, FINALPACKAGE / DEBUG toggle): we just strip the
+          # trailing ".deb" and append the flavor tag.
+          DEB=$(basename packages/*.deb .deb)
           cp packages/jailed/KiouKifExporter.dylib \
-             "dist/KiouKifExporter-${VER}-jailed.dylib"
+             "dist/${DEB}-jailed.dylib"
           cp packages/binpatch/KiouKifExporter.dylib \
-             "dist/KiouKifExporter-${VER}-binpatch.dylib"
+             "dist/${DEB}-binpatch.dylib"
           ls -la dist/
 
       - name: Compute SHA256 checksums
