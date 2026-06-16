@@ -79,7 +79,7 @@ BUILD_COMMIT             ?= $(shell git rev-parse --short=7 HEAD 2>/dev/null || 
 $(TWEAK_NAME)_CFLAGS     := -fobjc-arc -Wno-unused-function \
                             -D$(BUILD_COMMIT_DEFINE)=\"$(BUILD_COMMIT)\" \
                             -ISources/Common -I$(TWEAK_SOURCES_DIR)
-$(TWEAK_NAME)_FRAMEWORKS := Foundation
+$(TWEAK_NAME)_FRAMEWORKS := Foundation UIKit
 
 # ---------------------------------------------------------------------------
 # Hook engine / distribution selection.

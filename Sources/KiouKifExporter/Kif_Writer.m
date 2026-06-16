@@ -1,4 +1,5 @@
 #import "Internal.h"
+#import "Settings.h"
 
 // ===========================================================================
 // Kif_Writer.m — the entire reason this tweak exists.
@@ -24,6 +25,17 @@ NSString *kif_writer_emit_for_match_end(void *gameCtrl,
                                         void *matchConfig,
                                         void *stateStore,
                                         const char *matchModeTag) {
+    // 0. Per-mode auto-save gate (issue #21 / v0.5 settings sheet).
+    //    If the user toggled this mode off in the settings sheet, skip
+    //    the entire KIF export so no file is created. All modes are ON
+    //    by default (registered via KKESettingsRegisterDefaults()).
+    if (!KKESettingsIsModeEnabled(matchModeTag)) {
+        file_log([NSString stringWithFormat:
+                  @"[KIF] auto-save disabled for mode=%s — skipping emit",
+                  matchModeTag ? matchModeTag : "unknown"]);
+        return nil;
+    }
+
     // 1. Get the KIF text. matchConfig / stateStore may be NULL — in
     //    that case player names and time-rule label come out blank,
     //    which is acceptable.
