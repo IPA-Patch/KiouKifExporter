@@ -450,6 +450,7 @@ Each match produces a tidy run of `[MMODE]` lifecycle lines and a final
 | **v0.2** | `BlackPlayerName` / `WhitePlayerName` / `StartDateTime` / `MatchTitle` / `TimeRuleLabel` / `EndingLabel` filled at match end. Player names come from `GameStateStore._blackPlayerInfo` / `_whitePlayerInfo` (the same `ReactiveProperty` the on-screen UI reads), with a `MatchConfig` fallback for AI / local / replay modes. |
 | **v0.3** (current) | Statically-patched IPA pipeline (`make ipa`) — bakes the same hook chain into a patched `UnityFramework` and reserves a `__DATA` slot, so non-jailbroken iOS 18 installs (where CSM kills runtime inline hooks) keep working without Dobby. The runtime-hook builds (`make package` / `make jailed`) keep covering iOS 15–17. |
 | **v0.4** | Per-move consumption times via `mach_absolute_time()` accumulation + `List<long>..ctor()` / `Add(long)` to build `KIFWriteOptions.ThinkingTimesMicros` — restores the `(M:SS/HH:MM:SS)` annotation on each move. |
+| **v0.5** | In-app settings sheet — a floating button opens a `UIViewController` overlay (same window-overlay pattern as KiouEditor) where the user can toggle auto-save per match mode (`AIMatchMode`, `CPUStreamMode`, `OnlinePvPMode`, `LocalPvPMode`, `RecordReplayMode`). Selections are persisted in `NSUserDefaults`; `OnMatchEndAsync` checks the flag and returns early if the mode is disabled. |
 
 ## Sibling tweaks
 
