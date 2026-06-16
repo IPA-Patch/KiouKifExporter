@@ -1,10 +1,17 @@
 # Dependabot keeps the GitHub Actions `uses:` references in our
 # workflows up-to-date. Grouped weekly so we get a single PR per week
 # instead of one per action.
+#
+# target-branch: develop — the repo's default branch is master (= the
+# release branch), but the feature -> develop -> master flow forbids
+# direct PRs against master. Without target-branch dependabot would
+# default to master and produce un-mergeable PRs. Pointing it at
+# develop puts the bot's bumps on the same path as a feature PR.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: "/"
+    target-branch: develop
     schedule:
       interval: weekly
     groups:
@@ -20,6 +27,7 @@ updates:
 
   - package-ecosystem: gitsubmodule
     directory: "/"
+    target-branch: develop
     schedule:
       interval: weekly
     commit-message:

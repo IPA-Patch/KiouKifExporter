@@ -259,8 +259,8 @@ your own host** from a decrypted KIOU `.ipa` you supply — the
 project never redistributes a re-bundled KIOU binary.
 
 1. Download
-   `KiouKifExporter-<ver>-binpatch.dylib` from the
-   [Releases page](https://github.com/IPA-Patch/KiouKifExporter/releases).
+   `work.tkgstrator.kioukifexporter_<ver>-1_iphoneos-arm64-binpatch.dylib`
+   from the [Releases page](https://github.com/IPA-Patch/KiouKifExporter/releases).
    This is the binpatch flavor of the dylib (Dobby-static, slot-publisher
    constructor — not the runtime-hook `-jailed.dylib`).
 2. On your host, drop a decrypted KIOU `.ipa` at
