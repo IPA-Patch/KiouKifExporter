@@ -1,0 +1,30 @@
+# Dependabot keeps the GitHub Actions `uses:` references in our
+# workflows up-to-date. Grouped weekly so we get a single PR per week
+# instead of one per action.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: ci
+      include: scope
+    labels:
+      - dependencies
+      - github-actions
+
+  - package-ecosystem: gitsubmodule
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    labels:
+      - dependencies
+      - submodules

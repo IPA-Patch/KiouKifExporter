@@ -24,7 +24,7 @@ env:
 
 jobs:
   release:
-    name: build + release
+    name: Build + Release
     runs-on: ubuntu-latest
     steps:
       - name: Resolve tag
@@ -37,17 +37,38 @@ jobs:
           fi
 
       - name: Checkout source at tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ steps.tag.outputs.value }}
           fetch-depth: 0
+          # Sources/Common + shared/ are git submodules referenced by
+          # the Makefile (Sources/Common/logging.m, Sources/Common/binpatch.m,
+          # shared/tools/build_patched_ipa.sh). Without recursive checkout
+          # the Theos build fails with "file not found".
+          submodules: recursive
 
       - name: Install host build tools
+        # libtinfo6 / libncurses6 are runtime deps of L1ghtmann's iOS
+        # cross-clang (mirror what the devcontainer's Dockerfile installs).
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              build-essential curl git make perl ldid xz-utils \
-              libplist-utils libc++-dev
+              build-essential curl git make perl xz-utils \
+              libplist-utils libc++-dev \
+              libtinfo6 libncurses6
+
+      - name: Install ldid
+        # `ldid` isn't packaged for Ubuntu noble (24.04). Grab the
+        # ProcursusTeam fork's prebuilt Linux x86_64 binary, the same
+        # way Theos's own docs recommend. Pin the version so a quiet
+        # upstream rotation doesn't break a release build without an
+        # explicit bump here.
+        run: |
+          LDID_VERSION="v2.1.5-procursus7"
+          curl -L -o /tmp/ldid \
+              "https://github.com/ProcursusTeam/ldid/releases/download/${LDID_VERSION}/ldid_linux_x86_64"
+          sudo install -m 0755 /tmp/ldid /usr/local/bin/ldid
+          ldid -V || ldid 2>&1 | head -1 || true
 
       - name: Cache Theos
         id: theos-cache
@@ -55,25 +76,35 @@ jobs:
         with:
           path: |
             theos
-          key: theos-linux-${{ env.IOS_SDK_VERSION }}-v1
+          # See integration.yaml — v3 = switched to L1ghtmann's modern
+          # toolchain, the same one the devcontainer uses.
+          key: theos-linux-${{ env.IOS_SDK_VERSION }}-v3
 
       - name: Install Theos
         if: steps.theos-cache.outputs.cache-hit != 'true'
         run: |
           git clone --recursive https://github.com/theos/theos.git "$THEOS"
 
-          mkdir -p "$THEOS/toolchain"
-          curl -L -o /tmp/toolchain.tar.xz \
-              "https://github.com/sbingner/llvm-project/releases/download/v10.0.0-1/linux-ios-arm64e-clang-toolchain.tar.lzma"
-          tar -xf /tmp/toolchain.tar.xz -C "$THEOS/toolchain"
-          mv "$THEOS/toolchain/linux" "$THEOS/toolchain/linux2" || true
+          # Linux iOS cross-toolchain — L1ghtmann's modern fork. See
+          # integration.yaml for the full comment. Archive extracts
+          # directly into linux/{iphone,host} under $THEOS/toolchain.
+          ARCH=$(uname -m)
+          curl -fsSL \
+              "https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-${ARCH}.tar.xz" \
+            | tar xJ -C "$THEOS/toolchain"
 
           mkdir -p "$THEOS/sdks"
-          curl -L -o /tmp/sdk.tar.xz \
+          curl -L -o /tmp/sdk.tar.gz \
               "https://github.com/theos/sdks/archive/master.tar.gz"
-          tar -xf /tmp/sdk.tar.xz -C /tmp
+          tar -xf /tmp/sdk.tar.gz -C /tmp
           cp -R "/tmp/sdks-master/iPhoneOS${IOS_SDK_VERSION}.sdk" \
                 "$THEOS/sdks/"
+
+      - name: Verify Theos
+        run: |
+          test -d "$THEOS/sdks/iPhoneOS${IOS_SDK_VERSION}.sdk"
+          test -x "$THEOS/toolchain/linux/iphone/bin/clang"
+          "$THEOS/toolchain/linux/iphone/bin/clang" --version
 
       - name: Build rootless .deb (MobileSubstrate)
         run: |
@@ -86,34 +117,57 @@ jobs:
           make jailed
           ls -la packages/jailed/
 
-      - name: Sanity check jailed dylib (no external hook engine)
+      - name: Build binpatch .dylib (static-patch slot publisher)
+        # The binpatch flavor is what users pair with `make ipa` on
+        # their own host against a decrypted KIOU IPA. Same Dobby-static
+        # link shape as the jailed dylib, but compiled with
+        # -DIPA_BINPATCH=1 so the constructor publishes hook function
+        # pointers into a reserved __DATA slot instead of inline-hooking
+        # __TEXT — the only mode that survives iOS 18's CSM.
         run: |
-          DYLIB=packages/jailed/KiouKifExporter.dylib
-          test -f "$DYLIB"
-          if command -v otool >/dev/null 2>&1; then
-              otool -L "$DYLIB"
-              if otool -L "$DYLIB" | grep -E "libsubstrate|libdobby"; then
-                  echo "::error::Jailed dylib leaks an external hook-engine dependency"
-                  exit 1
+          make binpatch
+          ls -la packages/binpatch/
+
+      - name: Sanity check jailed + binpatch dylibs (no external hook engine)
+        # Both Dobby-static dylibs must NOT link to libsubstrate or
+        # libdobby — those references would brick Sideloadly / patched
+        # IPA installs at load time.
+        run: |
+          for DYLIB in packages/jailed/KiouKifExporter.dylib \
+                       packages/binpatch/KiouKifExporter.dylib; do
+              test -f "$DYLIB"
+              if command -v otool >/dev/null 2>&1; then
+                  otool -L "$DYLIB"
+                  if otool -L "$DYLIB" | grep -E "libsubstrate|libdobby"; then
+                      echo "::error::$DYLIB leaks an external hook-engine dependency"
+                      exit 1
+                  fi
+              else
+                  strings "$DYLIB" | grep -E "libsubstrate|libdobby\.dylib" \
+                      && { echo "::error::$DYLIB leaks an external hook-engine dependency"; exit 1; } \
+                      || echo "$DYLIB: no external hook-engine references found"
               fi
-          else
-              strings "$DYLIB" | grep -E "libsubstrate|libdobby\.dylib" \
-                  && { echo "::error::Jailed dylib leaks an external hook-engine dependency"; exit 1; } \
-                  || echo "no external hook-engine references found"
-          fi
+          done
 
       - name: Stage release assets
         id: assets
+        # We ship the .deb, the jailed dylib, and the binpatch dylib —
+        # but never the patched IPA itself, since that would re-bundle
+        # the decrypted KIOU UnityFramework the operator supplied.
+        # Users wanting the patched IPA pair the binpatch dylib with
+        # `make ipa DECRYPTED_IPA=...` on their own host.
         run: |
           mkdir -p dist
           # Versioned .deb file name copied verbatim out of packages/.
           cp packages/*.deb dist/
-          # Rename the jailed dylib to include the tag so Releases makes
-          # it obvious which build a user is grabbing.
+          # Rename the dylibs to include the tag so Releases makes it
+          # obvious which build a user is grabbing.
           TAG="${{ steps.tag.outputs.value }}"
           VER="${TAG#v}"
           cp packages/jailed/KiouKifExporter.dylib \
              "dist/KiouKifExporter-${VER}-jailed.dylib"
+          cp packages/binpatch/KiouKifExporter.dylib \
+             "dist/KiouKifExporter-${VER}-binpatch.dylib"
           ls -la dist/
 
       - name: Compute SHA256 checksums
