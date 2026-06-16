@@ -1,7 +1,9 @@
 #import "Internal.h"
 
 #import <CommonCrypto/CommonDigest.h>
+#import <dispatch/dispatch.h>
 #import <dlfcn.h>
+#import <string.h>
 
 // ===========================================================================
 // kif_trace_log — KIF_TRACE-gated wrapper around file_log.
