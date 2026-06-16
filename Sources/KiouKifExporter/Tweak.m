@@ -1,4 +1,5 @@
 #import "Internal.h"
+#import "Settings.h"
 #import "binpatch.h"
 
 // ===========================================================================
@@ -108,6 +109,13 @@ __attribute__((constructor)) static void init(void) {
     file_log(@"=== KiouKifExporter loaded ===");
     file_log([NSString stringWithFormat:@"build commit=%s",
               KIOU_KIF_EXPORTER_COMMIT]);
+
+    // Register per-mode NSUserDefaults so all modes default to ON on
+    // first launch (no .kif suppression for users who never open settings).
+    KKESettingsRegisterDefaults();
+
+    // Attach the right-edge swipe gesture that opens the settings sheet.
+    KKEGestureInstall();
 
     // UnityFramework is almost certainly not mapped yet at constructor time.
     installUnityHooks();
