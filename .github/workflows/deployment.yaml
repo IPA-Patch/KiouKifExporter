@@ -106,15 +106,21 @@ jobs:
           test -x "$THEOS/toolchain/linux/iphone/bin/clang"
           "$THEOS/toolchain/linux/iphone/bin/clang" --version
 
+      # FINALPACKAGE=1 — Theos release-mode switch. Without it Theos
+      # builds at -O0 with debug symbols and stamps "+debug" into the
+      # .deb file name (e.g. *_0.1.0-1+debug_iphoneos-arm64.deb), which
+      # is fine locally but not what a tagged Release should ship.
+      # Passing it once here puts every CD artifact in release shape:
+      # -O3, stripped debug symbols, no "+debug" suffix.
       - name: Build rootless .deb (MobileSubstrate)
         run: |
           make clean
-          make package
+          make package FINALPACKAGE=1
           ls -la packages/
 
       - name: Build jailed .dylib (Dobby static)
         run: |
-          make jailed
+          make jailed FINALPACKAGE=1
           ls -la packages/jailed/
 
       - name: Build binpatch .dylib (static-patch slot publisher)
@@ -125,7 +131,7 @@ jobs:
         # pointers into a reserved __DATA slot instead of inline-hooking
         # __TEXT — the only mode that survives iOS 18's CSM.
         run: |
-          make binpatch
+          make binpatch FINALPACKAGE=1
           ls -la packages/binpatch/
 
       - name: Sanity check jailed + binpatch dylibs (no external hook engine)
@@ -156,18 +162,27 @@ jobs:
         # the decrypted KIOU UnityFramework the operator supplied.
         # Users wanting the patched IPA pair the binpatch dylib with
         # `make ipa DECRYPTED_IPA=...` on their own host.
+        #
+        # Dylib names mirror the Theos .deb name shape:
+        #   work.tkgstrator.kioukifexporter_<ver>-1_iphoneos-arm64-<flavor>.dylib
+        # so all three artifacts ship under the same bundle-id /
+        # version / arch prefix and only differ in the trailing flavor
+        # tag (jailed / binpatch). Grep-friendly and unambiguous.
         run: |
           mkdir -p dist
+          # Read the Theos package name + version straight out of
+          # ./control so the dylib names track whatever the .deb does
+          # (no second source of truth to keep in sync at bump time).
+          PKG=$(awk -F': ' '/^Package: /{print $2}' control)
+          VER=$(awk -F': ' '/^Version: /{print $2}' control)
+          ARCH=$(awk -F': ' '/^Architecture: /{print $2}' control)
+          STEM="${PKG}_${VER}-1_${ARCH}"
           # Versioned .deb file name copied verbatim out of packages/.
           cp packages/*.deb dist/
-          # Rename the dylibs to include the tag so Releases makes it
-          # obvious which build a user is grabbing.
-          TAG="${{ steps.tag.outputs.value }}"
-          VER="${TAG#v}"
           cp packages/jailed/KiouKifExporter.dylib \
-             "dist/KiouKifExporter-${VER}-jailed.dylib"
+             "dist/${STEM}-jailed.dylib"
           cp packages/binpatch/KiouKifExporter.dylib \
-             "dist/KiouKifExporter-${VER}-binpatch.dylib"
+             "dist/${STEM}-binpatch.dylib"
           ls -la dist/
 
       - name: Compute SHA256 checksums
