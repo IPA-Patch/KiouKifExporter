@@ -9,10 +9,11 @@
 // Design (matches issue #21):
 //   * KKESettingsRegisterDefaults(): registers {KKE_save_<mode>: YES}
 //     for every known mode so first-launch behaviour is "all on".
-//   * KKEGestureInstall(): attaches a UIScreenEdgePanGestureRecognizer to
-//     the key window's root view. Swiping in from the right edge presents
-//     KKESettingsViewController as a bottom sheet. No floating button; no
-//     overlay view needed — the gesture sits on the existing window.
+//   * KKEGestureInstall(): attaches a UIScreenEdgePanGestureRecognizer
+//     to the key window itself (via -[UIWindow addGestureRecognizer:]).
+//     Swiping in from the right edge presents KKESettingsViewController
+//     as a bottom sheet. No floating button; no overlay view needed —
+//     the recognizer sits on the existing window.
 //   * KKESettingsViewController: UITableView with one UISwitch row per mode.
 //     Changes are written to NSUserDefaults immediately.
 //   * kif_writer_emit_for_match_end() (Kif_Writer.m) calls
@@ -171,23 +172,25 @@ titleForFooterInSection:(NSInteger)section {
 void KKEPresentSettings(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIViewController *root = KKEKeyWindow().rootViewController;
-        while (root.presentedViewController) {
-            root = root.presentedViewController;
-        }
         if (!root) {
             file_log(@"[KKE] present: no root VC found");
             return;
         }
-        // Avoid stacking multiple sheets if the user triggers again while
-        // one is already presented.
-        if ([root.presentedViewController
-                isKindOfClass:[UINavigationController class]]) {
-            UINavigationController *existing =
-                (UINavigationController *)root.presentedViewController;
-            if ([existing.topViewController
-                    isKindOfClass:[KKESettingsViewController class]]) {
-                return;
+        // Walk down to the topmost view controller, and at the same time
+        // bail out if any layer is already presenting our settings sheet
+        // (so repeated swipes don't stack copies on top of each other).
+        // Checking at the top *after* the walk doesn't work: by then
+        // root.presentedViewController is nil by construction.
+        while (root.presentedViewController) {
+            UIViewController *next = root.presentedViewController;
+            if ([next isKindOfClass:[UINavigationController class]]) {
+                UINavigationController *nav = (UINavigationController *)next;
+                if ([nav.topViewController
+                        isKindOfClass:[KKESettingsViewController class]]) {
+                    return;
+                }
             }
+            root = next;
         }
 
         KKESettingsViewController *settings =
