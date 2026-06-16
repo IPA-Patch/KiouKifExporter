@@ -109,9 +109,10 @@ jobs:
       # FINALPACKAGE=1 — Theos release-mode switch. Without it Theos
       # builds at -O0 with debug symbols and stamps "+debug" into the
       # .deb file name (e.g. *_0.1.0-1+debug_iphoneos-arm64.deb), which
-      # is fine locally but not what a tagged Release should ship.
-      # Passing it once here puts every CD artifact in release shape:
-      # -O3, stripped debug symbols, no "+debug" suffix.
+      # is fine locally but not what a tagged Release should ship. Each
+      # of the three make invocations below passes it so every CD
+      # artifact is built in release shape: -O3, stripped debug
+      # symbols, no "+debug" suffix on the .deb.
       - name: Build rootless .deb (MobileSubstrate)
         run: |
           make clean
@@ -170,19 +171,18 @@ jobs:
         # tag (jailed / binpatch). Grep-friendly and unambiguous.
         run: |
           mkdir -p dist
-          # Read the Theos package name + version straight out of
-          # ./control so the dylib names track whatever the .deb does
-          # (no second source of truth to keep in sync at bump time).
-          PKG=$(awk -F': ' '/^Package: /{print $2}' control)
-          VER=$(awk -F': ' '/^Version: /{print $2}' control)
-          ARCH=$(awk -F': ' '/^Architecture: /{print $2}' control)
-          STEM="${PKG}_${VER}-1_${ARCH}"
           # Versioned .deb file name copied verbatim out of packages/.
           cp packages/*.deb dist/
+          # Derive the dylib filename stem from the .deb itself, not
+          # from ./control. This way the dylibs track whatever shape
+          # Theos chose (including the package revision, any future
+          # rename, FINALPACKAGE / DEBUG toggle): we just strip the
+          # trailing ".deb" and append the flavor tag.
+          DEB=$(basename packages/*.deb .deb)
           cp packages/jailed/KiouKifExporter.dylib \
-             "dist/${STEM}-jailed.dylib"
+             "dist/${DEB}-jailed.dylib"
           cp packages/binpatch/KiouKifExporter.dylib \
-             "dist/${STEM}-binpatch.dylib"
+             "dist/${DEB}-binpatch.dylib"
           ls -la dist/
 
       - name: Compute SHA256 checksums
