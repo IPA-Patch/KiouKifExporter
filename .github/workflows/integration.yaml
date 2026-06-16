@@ -1,10 +1,14 @@
 name: integration
 
-# CI: build both the rootless .deb (MobileSubstrate path) and the jailed
-# .dylib (Dobby-static path) on every push to master / develop and on
-# every PR targeting either. Fails fast if the dylib accidentally picks
-# up an external hook-engine dependency, since that would brick
-# Sideloadly installs.
+# CI: build all three distribution flavors — the rootless .deb
+# (MobileSubstrate path), the jailed .dylib (Dobby-static path), and
+# the binpatch .dylib (iOS 18 __DATA slot-table path) — on every push
+# to master / develop and on every PR targeting either. Fails fast if
+# either dylib accidentally picks up an external hook-engine dependency,
+# since that would brick Sideloadly / TrollStore installs.
+#
+# This workflow never publishes anything. Releases are handled separately
+# by deployment.yaml (tag-triggered, owns the GitHub Release upload).
 
 on:
   push:
@@ -13,6 +17,9 @@ on:
     branches: [master, develop]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: integration-${{ github.ref }}
   cancel-in-progress: true
@@ -20,6 +27,11 @@ concurrency:
 env:
   THEOS: ${{ github.workspace }}/theos
   IOS_SDK_VERSION: "16.5"
+  # `ldid` isn't packaged for Ubuntu noble (24.04). We pull the
+  # ProcursusTeam fork's prebuilt Linux x86_64 binary the way Theos's
+  # own docs recommend, and pin the version here so a quiet upstream
+  # rotation doesn't break CI without an explicit bump in this file.
+  LDID_VERSION: "v2.1.5-procursus7"
 
 jobs:
   commitlint:
@@ -71,6 +83,10 @@ jobs:
             make_args: "jailed"
             artifact_name: kioukifexporter-jailed-dylib
             artifact_path: packages/jailed/KiouKifExporter.dylib
+          - flavor: binpatch
+            make_args: "binpatch"
+            artifact_name: kioukifexporter-binpatch-dylib
+            artifact_path: packages/binpatch/KiouKifExporter.dylib
 
     steps:
       - name: Checkout source
@@ -93,12 +109,8 @@ jobs:
               libtinfo6 libncurses6
 
       - name: Install ldid
-        # `ldid` isn't packaged for Ubuntu noble (24.04), so we grab the
-        # ProcursusTeam fork's prebuilt Linux x86_64 binary the way
-        # Theos's own docs recommend. Pin the version so a quiet upstream
-        # rotation doesn't break CI without an explicit bump here.
+        # Pin (and rationale) live on the workflow-level env block above.
         run: |
-          LDID_VERSION="v2.1.5-procursus7"
           curl -L -o /tmp/ldid \
               "https://github.com/ProcursusTeam/ldid/releases/download/${LDID_VERSION}/ldid_linux_x86_64"
           sudo install -m 0755 /tmp/ldid /usr/local/bin/ldid
@@ -159,22 +171,25 @@ jobs:
           make package
           ls -la packages/
 
-      - name: Sanity check jailed dylib (no external hook engine)
-        if: matrix.flavor == 'jailed'
+      - name: Sanity-check dylib (no external hook engine)
+        if: matrix.flavor != 'substrate'
         run: |
-          DYLIB=packages/jailed/KiouKifExporter.dylib
+          # The jailed and binpatch builds statically link Dobby; neither
+          # may carry an external libsubstrate/libdobby dependency or it
+          # would fail to load on a sideloaded install.
+          DYLIB="${{ matrix.artifact_path }}"
           test -f "$DYLIB"
           # otool may be unavailable on Linux; fall back to nm-style scan.
           if command -v otool >/dev/null 2>&1; then
               otool -L "$DYLIB"
               if otool -L "$DYLIB" | grep -E "libsubstrate|libdobby"; then
-                  echo "::error::Jailed dylib leaks an external hook-engine dependency"
+                  echo "::error::$DYLIB leaks an external hook-engine dependency"
                   exit 1
               fi
           else
               strings "$DYLIB" | grep -E "libsubstrate|libdobby\.dylib" \
-                  && { echo "::error::Jailed dylib leaks an external hook-engine dependency"; exit 1; } \
-                  || echo "no external hook-engine references found"
+                  && { echo "::error::$DYLIB leaks an external hook-engine dependency"; exit 1; } \
+                  || echo "  $DYLIB: no external hook-engine references found"
           fi
 
       - name: Upload artifact
