@@ -1,6 +1,5 @@
 #import "Internal.h"
-#import <mach-o/dyld.h>
-#import <string.h>
+#import "binpatch.h"
 
 // ===========================================================================
 // KiouKifExporter — entry point.
@@ -22,9 +21,9 @@ static BOOL g_unityHooked = NO;
 // re-walking dyld.
 uintptr_t g_unityBase = 0;
 
-#ifdef KIOU_BINPATCH
+#ifdef IPA_BINPATCH
 // ---------------------------------------------------------------------------
-// publish_binpatch_hook — KIOU_BINPATCH=1 entry-publication helper.
+// publish_binpatch_hook — IPA_BINPATCH=1 entry-publication helper.
 //
 // In binpatch mode we don't install any runtime hooks (Dobby / MSHook are
 // fatal under iOS 18's Code Signing Monitor — see
@@ -41,12 +40,12 @@ static void publish_binpatch_hook(uintptr_t unityBase) {
     g_unityBase = unityBase;
 
     void **slot = (void **)(unityBase + (uintptr_t)KIOU_HOOK_SLOT_RVA);
-    *slot = (void *)&kif_binpatch_OnMatchEndAsync;
+    *slot = (void *)&hook_OnMatchEndAsync;
 
     file_log([NSString stringWithFormat:
-              @"[BINPATCH] published &kif_binpatch_OnMatchEndAsync=%p "
+              @"[BINPATCH] published &hook_OnMatchEndAsync=%p "
               @"-> slot=%p (unityBase=0x%lx + rva=0x%lx)",
-              (void *)&kif_binpatch_OnMatchEndAsync, (void *)slot,
+              (void *)&hook_OnMatchEndAsync, (void *)slot,
               (unsigned long)unityBase,
               (unsigned long)KIOU_HOOK_SLOT_RVA]);
 }
@@ -55,28 +54,19 @@ static void publish_binpatch_hook(uintptr_t unityBase) {
 static void installUnityHooks(void) {
     if (g_unityHooked) return;
 
-    uint32_t imgCount = _dyld_image_count();
-    uintptr_t unityBase = 0;
-    const char *unityName = NULL;
-    for (uint32_t i = 0; i < imgCount; i++) {
-        const char *name = _dyld_get_image_name(i);
-        if (name && strstr(name, "UnityFramework")) {
-            unityBase = (uintptr_t)_dyld_get_image_header(i);
-            unityName = name;
-            break;
-        }
-    }
-
+    // Locate UnityFramework via IPA-Patch/Common's generic dyld walker.
+    // Returns 0 until UnityFramework is mapped — installUnityHooks is
+    // called from a retry loop that takes care of the wait.
+    uintptr_t unityBase = ipa_binpatch_find_image("UnityFramework");
     if (unityBase == 0) {
-        // Not loaded yet — retry will call us again.
         return;
     }
 
     g_unityBase = unityBase;
 
     file_log([NSString stringWithFormat:
-              @"UnityFramework base=0x%lx (%s)",
-              (unsigned long)unityBase, unityName ? unityName : "?"]);
+              @"UnityFramework base=0x%lx",
+              (unsigned long)unityBase]);
 
     // Make sure the output directory is ready before the first match ends.
     // If this fails, kif_writer_emit_for_match_end will retry — but doing
@@ -85,11 +75,11 @@ static void installUnityHooks(void) {
     file_log([NSString stringWithFormat:
               @"output dir = %@", outDir ?: @"(failed)"]);
 
-#ifndef KIOU_BINPATCH
+#ifndef IPA_BINPATCH
     // Runtime-hook install path (Phase 1 / jailbroken builds). Uses
     // MSHookFunction or Dobby under the hood — both rely on mprotect +
     // memcpy into __TEXT, which iOS 18 CSM kills on contact. That's
-    // exactly why the KIOU_BINPATCH path below exists.
+    // exactly why the IPA_BINPATCH path below exists.
     install_MatchModeObserve_hook(unityBase);
 #else
     // iOS 18 binpatch path: UnityFramework's prologues are already

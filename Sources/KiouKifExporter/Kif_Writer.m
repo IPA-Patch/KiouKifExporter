@@ -21,9 +21,16 @@
 // ===========================================================================
 
 NSString *kif_writer_emit_for_match_end(void *gameCtrl,
+                                        void *matchConfig,
+                                        void *stateStore,
                                         const char *matchModeTag) {
-    // 1. Get the KIF text.
-    NSString *kif = kifTextFromGameController(gameCtrl);
+    // 1. Get the KIF text. matchConfig / stateStore may be NULL — in
+    //    that case player names and time-rule label come out blank,
+    //    which is acceptable.
+    NSString *kif = kifTextFromGameController(gameCtrl,
+                                              matchConfig,
+                                              stateStore,
+                                              matchModeTag);
     if (kif.length == 0) {
         file_log([NSString stringWithFormat:
                   @"[KIF] emit skipped: GetKifuText returned empty "
@@ -71,7 +78,12 @@ NSString *kif_writer_emit_for_match_end(void *gameCtrl,
 }
 
 // ===========================================================================
-// kif_binpatch_OnMatchEndAsync — Phase 1.5 binpatch entry point.
+// hook_OnMatchEndAsync — the Patched-build entry point for OnMatchEndAsync.
+//
+// Mirrors the Tweak build's `hook_xxx_End` family (Hook_MatchModeObserve.m),
+// except that under the Patched build all five concrete IMatchMode subclasses
+// funnel through this one symbol — the cave passes `mode_index` so we can
+// still discriminate.
 //
 // Called from the cave that patch_unity.py emits into UnityFramework. The
 // cave loads our address from the __DATA slot (KIOU_HOOK_SLOT_RVA) and
@@ -82,7 +94,7 @@ NSString *kif_writer_emit_for_match_end(void *gameCtrl,
 //   * our return value is dead — the cave overwrites x0/x1 with the
 //     original method's result a few instructions later
 //
-// Always exported (not behind #ifdef KIOU_BINPATCH) so that the substrate
+// Always exported (not behind #ifdef IPA_BINPATCH) so that the substrate
 // / jailed builds keep a single, stable symbol table. The function is
 // trivially cheap when never reached.
 // ===========================================================================
@@ -96,8 +108,8 @@ NSString *kif_writer_emit_for_match_end(void *gameCtrl,
 //
 // Logs the chain (self / adapter / gameCtrl / positionHistory) on failure
 // so the BINPATCH log shows exactly where the walk gave up.
-static void *kif_binpatch_resolveGameController(void *self,
-                                                uint32_t mode_index) {
+static void *hook_resolveGameController(void *self,
+                                        uint32_t mode_index) {
     if (mode_index >= KIOU_BINPATCH_MODE_COUNT) {
         file_log([NSString stringWithFormat:
                   @"[BINPATCH] mode_index=%u out of range (count=%d)",
@@ -129,8 +141,25 @@ static void *kif_binpatch_resolveGameController(void *self,
     return gameCtrl;
 }
 
-UniTaskRet kif_binpatch_OnMatchEndAsync(void *self, void *ct,
-                                        uint32_t mode_index) {
+// OnlinePvPMode field offsets (dump.cs L1421556+):
+//   _stateStore   @ 0x28  (GameStateStore*) — where the real friend-match
+//                                            player names eventually land
+//   _matchConfig  @ 0x38  (MatchConfig*)    — locked-in initial values;
+//                                            BlackPlayer / WhitePlayer
+//                                            stay at "プレイヤー" for
+//                                            the whole match
+//
+// On the other four IMatchMode subclasses _matchConfig is NOT a field —
+// they get cfg through InitializeAsync and throw it away — and
+// _stateStore lives at a different per-mode offset. For now we only
+// recover both for OnlinePvPMode (the mode where placeholders matter);
+// the rest pass NULL and fall back to the Tweak-side caches (which is
+// what matters during A/B development on a JB device anyway).
+#define ONLINEPVPMODE_OFF_STATE_STORE_PATCHED  0x28
+#define ONLINEPVPMODE_OFF_MATCHCONFIG          0x38
+
+UniTaskRet hook_OnMatchEndAsync(void *self, void *ct,
+                                uint32_t mode_index) {
     (void)ct;
 
     // mode_index is the cave-injected MOVZ X2,#imm that picks one of
@@ -140,7 +169,7 @@ UniTaskRet kif_binpatch_OnMatchEndAsync(void *self, void *ct,
         ? kKiouBinpatchModeNames[mode_index]
         : "Unknown";
 
-    void *gameCtrl = kif_binpatch_resolveGameController(self, mode_index);
+    void *gameCtrl = hook_resolveGameController(self, mode_index);
 
     // Fallback: only useful when both the jailed runtime-hook build and
     // the binpatch build happen to be loaded into the same process for an
@@ -157,12 +186,27 @@ UniTaskRet kif_binpatch_OnMatchEndAsync(void *self, void *ct,
         return (UniTaskRet){ NULL, NULL };
     }
 
+    // MatchConfig / GameStateStore discovery: only OnlinePvPMode keeps
+    // either as a field on `self`. For every other mode we'd be reading
+    // sibling fields at +0x28 / +0x38 — leave them NULL. As a courtesy
+    // let the Tweak side share its caches if both builds happen to be
+    // loaded (same A/B story as g_gameCtrlCache above).
+    void *matchConfig = NULL;
+    void *stateStore = NULL;
+    if (mode_index == KIOU_BINPATCH_MODE_ONLINEPVP && ptrLooksValid(self)) {
+        matchConfig = readPtr(self, ONLINEPVPMODE_OFF_MATCHCONFIG);
+        stateStore  = readPtr(self, ONLINEPVPMODE_OFF_STATE_STORE_PATCHED);
+    }
+    if (!matchConfig) matchConfig = g_matchConfigCache;
+    if (!stateStore)  stateStore  = g_stateStoreCache;
+
     file_log([NSString stringWithFormat:
               @"[BINPATCH] OnMatchEndAsync mode=%s self=%p ct=%p "
-              @"gameCtrl=%p — emitting KIF",
-              modeName, self, ct, gameCtrl]);
+              @"gameCtrl=%p matchConfig=%p stateStore=%p — emitting KIF",
+              modeName, self, ct, gameCtrl, matchConfig, stateStore]);
 
-    NSString *path = kif_writer_emit_for_match_end(gameCtrl, modeName);
+    NSString *path = kif_writer_emit_for_match_end(gameCtrl, matchConfig,
+                                                    stateStore, modeName);
     if (path) {
         file_log([NSString stringWithFormat:
                   @"[BINPATCH] %s emitted -> %@", modeName, path]);
