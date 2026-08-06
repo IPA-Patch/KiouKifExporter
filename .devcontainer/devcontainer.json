@@ -58,6 +58,7 @@
                 "GitHub.copilot",
                 "GitHub.copilot-chat",
                 "PKief.material-icon-theme",
+                "WakaTime.vscode-wakatime",
                 "antfu.file-nesting",
                 "bierner.markdown-mermaid",
                 "bierner.markdown-preview-github-styles",
@@ -71,7 +72,7 @@
                 "swiftlang.swift-vscode",
                 "tamasfe.even-better-toml",
                 "vsls-contrib.gitdoc"
-            ],
+              ],
             "settings": {}
         }
     }
